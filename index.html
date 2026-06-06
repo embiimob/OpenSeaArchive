@@ -71,8 +71,21 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 10px;
     }
+    .field-inline {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .field-inline > input {
+      flex: 1 1 auto;
+    }
+    .field-inline > button {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
     @media (max-width: 720px) {
       .field-row { grid-template-columns: 1fr; }
+      .field-inline { flex-direction: column; align-items: stretch; }
     }
     label {
       color: var(--muted);
@@ -278,9 +291,9 @@
           <input id="openSeaInput" value="https://api.opensea.io/api/v2" autocomplete="off" spellcheck="false">
         </div>
         <div class="field">
-          <label for="openSeaApiKeyInput">OpenSea API key (optional)</label>
-          <input id="openSeaApiKeyInput" placeholder="Optional x-api-key for higher limits" autocomplete="off" spellcheck="false">
-          <div class="btn-row" style="margin-top:8px;">
+          <label for="openSeaApiKeyInput">OpenSea API key (required)</label>
+          <div class="field-inline">
+            <input id="openSeaApiKeyInput" placeholder="Required x-api-key" autocomplete="off" spellcheck="false">
             <button id="generateOpenSeaKeyBtn" type="button">Generate instant API key</button>
           </div>
         </div>
