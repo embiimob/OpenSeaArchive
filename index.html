@@ -350,6 +350,7 @@
     const CID_LOOSE_RE = new RegExp(`(${CID_ANY_SRC})(?:[\\\\/]+([^<>\\\\s]+))?`, 'i');
     const CID_TEXT_RE = new RegExp(`\\\\b(${CID_ANY_SRC})\\\\b`, 'ig');
     const IPFS_PATH_RE = /^\/?ipfs\/([a-zA-Z0-9]+)(?:\/(.*))?$/i;
+    const SRC_KEY_RE = /src-key:([0-9a-f]{64})/gi;
     // Convert a CIDv1 (bafy…, dag-pb + sha2-256 only) to its CIDv0 (Qm…) equivalent.
     // Returns the CIDv0 string on success, or null if the CID cannot be converted.
     function cidV1ToV0(cid) {
@@ -1523,7 +1524,7 @@
         S.openSeaItems = openSeaItems.filter(item => item.cid || item.sourceKey);
         // Populate processedSrcKeys from p2fk messages.
         S.processedSrcKeys.clear();
-        const srcKeyRe = /src-key:([0-9a-f]{64})/gi;
+        const srcKeyRe = new RegExp(SRC_KEY_RE.source, 'gi');
         p2fkItems.forEach(item => {
           const text = item.message || '';
           let m;
@@ -1708,7 +1709,7 @@
         S.openSeaItems = openSeaItems.filter(item => item.cid || item.sourceKey);
         // Rebuild processedSrcKeys from fresh p2fk data.
         S.processedSrcKeys.clear();
-        const srcKeyRe2 = /src-key:([0-9a-f]{64})/gi;
+        const srcKeyRe2 = new RegExp(SRC_KEY_RE.source, 'gi');
         p2fkItems.forEach(item => {
           const text = item.message || '';
           let m;
