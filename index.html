@@ -1386,9 +1386,9 @@
       );
       const collection = token?.collection || {};
       const openseaUrl = norm(token?.opensea_url || token?.permalink || token?.asset_url);
-      // artistAlias: use name embedded in creator object if present; resolved name is patched in by
-      // loadOpenSeaItems after an async accounts lookup. Never fall back to the current owner.
-      const artistAlias = creatorNameFromObj || creatorAddress || norm(collection?.name) || '';
+      // artistAlias: prefer creator fields from the token, then fall back to the resolved OpenSea
+      // profile alias we analyzed when creator metadata is omitted from the NFT payload.
+      const artistAlias = creatorNameFromObj || creatorAddress || norm(user?.alias) || norm(collection?.name) || '';
       return {
         source: entry.source,
         sourceLabel: entry.source === 'created' ? 'OpenSea / created' : 'OpenSea / owned',
