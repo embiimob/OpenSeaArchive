@@ -357,6 +357,7 @@
     const FEE_CACHE_TTL = 5 * 60 * 1000;
     const AUTO_SYNC_TICK_MS = 5 * 60 * 1000;
     const DIFF_RECHECK_MS = 60 * 60 * 1000;
+    const OPEN_SEA_KEY_RENEW_MS = 60 * 60 * 1000;
     const QUEUE_DISPLAY_LIMIT = 10;
     const CONFIRMED_DISPLAY_LIMIT = 5;
     const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -385,6 +386,10 @@
       syncStateByCid: new Map(),
       feeRateCache: null,
       feeRateCachedAt: 0,
+      openSeaKeyAutoRenew: false,
+      openSeaKeyExpiresAtMs: 0,
+      openSeaKeyLastIssuedAtMs: 0,
+      openSeaKeyRenewing: false,
     };
 
     const $ = id => document.getElementById(id);
@@ -705,14 +710,17 @@
       return await res.json();
     }
 
-    async function createOpenSeaInstantApiKey() {
+    async function createOpenSeaInstantApiKey(options = {}) {
+      const auto = !!options.auto;
+      if (S.openSeaKeyRenewing) return;
       const base = getOpenSeaApi().replace(/\/$/, '');
       const url = `${base}/auth/keys`;
       const btn = $('generateOpenSeaKeyBtn');
       const prev = btn.textContent;
+      S.openSeaKeyRenewing = true;
       btn.disabled = true;
       btn.textContent = 'Generating…';
-      setStatus('analysisStatus', 'Requesting instant OpenSea API key…');
+      setStatus('analysisStatus', auto ? 'Auto-renewing OpenSea API key…' : 'Requesting instant OpenSea API key…');
       try {
         const res = await fetch(url, {
           method: 'POST',
@@ -728,6 +736,12 @@
         const apiKey = norm(payload?.api_key);
         if (!apiKey) throw new Error('OpenSea response did not include api_key.');
         $('openSeaApiKeyInput').value = apiKey;
+        S.openSeaKeyAutoRenew = true;
+        S.openSeaKeyLastIssuedAtMs = Date.now();
+        const expiresMs = Date.parse(norm(payload?.expires_at || ''));
+        S.openSeaKeyExpiresAtMs = Number.isFinite(expiresMs) && expiresMs > 0
+          ? expiresMs
+          : (S.openSeaKeyLastIssuedAtMs + OPEN_SEA_KEY_RENEW_MS);
         const limit = res.headers.get('X-RateLimit-Limit');
         const remaining = res.headers.get('X-RateLimit-Remaining');
         const resetRaw = norm(res.headers.get('X-RateLimit-Reset') || '');
@@ -746,11 +760,30 @@
           remaining ? `remaining ${remaining}` : '',
           resetAt ? `reset ${resetAt}` : '',
         ].filter(Boolean).join(', ');
-        appendLog(`Generated instant OpenSea API key (${shortText(apiKey, 18)}).${extras ? ` Rate limits: ${extras}.` : ''}`, 'good');
-        setStatus('analysisStatus', `OpenSea API key generated${payload?.expires_at ? ` (expires ${payload.expires_at})` : ''}.`, 'good');
+        appendLog(`${auto ? 'Auto-renewed' : 'Generated'} instant OpenSea API key (${shortText(apiKey, 18)}).${extras ? ` Rate limits: ${extras}.` : ''}`, 'good');
+        setStatus('analysisStatus', `OpenSea API key ${auto ? 'auto-renewed' : 'generated'}${payload?.expires_at ? ` (expires ${payload.expires_at})` : ''}. Auto-renew runs every hour.`, 'good');
       } finally {
+        S.openSeaKeyRenewing = false;
         btn.disabled = false;
         btn.textContent = prev;
+      }
+    }
+
+    function shouldRenewOpenSeaApiKey(nowMs = Date.now()) {
+      if (!S.openSeaKeyAutoRenew) return false;
+      if (S.openSeaKeyRenewing) return false;
+      const currentKey = norm($('openSeaApiKeyInput').value);
+      if (!currentKey) return true;
+      if (S.openSeaKeyExpiresAtMs && nowMs >= S.openSeaKeyExpiresAtMs) return true;
+      return nowMs - (S.openSeaKeyLastIssuedAtMs || 0) >= OPEN_SEA_KEY_RENEW_MS;
+    }
+
+    async function runOpenSeaKeyAutoRenew() {
+      if (!shouldRenewOpenSeaApiKey()) return;
+      try {
+        await createOpenSeaInstantApiKey({ auto: true });
+      } catch (err) {
+        appendLog(`OpenSea API key auto-renew failed: ${err.message || 'Unknown error'}`, 'warn');
       }
     }
 
@@ -1626,12 +1659,13 @@
     $('analyzeBtn').addEventListener('click', analyze);
     $('startSyncBtn').addEventListener('click', startAutoSync);
     $('stopSyncBtn').addEventListener('click', stopAutoSync);
-    $('generateOpenSeaKeyBtn').addEventListener('click', () => createOpenSeaInstantApiKey().catch(err => {
+    $('generateOpenSeaKeyBtn').addEventListener('click', () => createOpenSeaInstantApiKey({ auto: false }).catch(err => {
       appendLog(err.message || 'OpenSea key generation failed.', 'bad');
       setStatus('analysisStatus', err.message || 'OpenSea key generation failed.', 'bad');
     }));
 
     setInterval(refreshConfirmationStates, 60000);
+    setInterval(runOpenSeaKeyAutoRenew, OPEN_SEA_KEY_RENEW_MS);
     renderWalletInfo([]);
     renderSummary();
     appendLog('OpenSeaArchive ready.');
