@@ -1323,17 +1323,23 @@
         token?.token_uri,
         token?.display_image_url,
       ].filter(Boolean);
-      const artifactInfo = artifactCandidates.map(v => extractIpfsParts(v)).find(Boolean) || null;
-      const cid = artifactInfo?.cid || '';
-      const urn = artifactInfo ? `IPFS:${artifactInfo.cid}${artifactInfo.path ? `/${artifactInfo.path}` : ''}` : '';
-      // For non-IPFS items, pick the best source URL. Prefer animation_url (video/audio) then image URLs.
-      const nonIpfsCandidates = !cid ? [
+      // Always treat OpenSea items as source-upload candidates, even when URLs already contain IPFS CIDs.
+      const cid = '';
+      const urn = '';
+      // Pick the best source URL. Prefer animation_url (video/audio) then image URLs, then metadata/token URI.
+      const sourceCandidates = [
         token?.animation_url,
         token?.image_original_url,
         token?.image_url,
         token?.display_image_url,
-      ].filter(v => v && !extractIpfsParts(norm(v))) : [];
-      const sourceUrl = nonIpfsCandidates.length ? norm(nonIpfsCandidates[0]) : '';
+        token?.metadata_url,
+        token?.token_uri,
+      ].filter(Boolean);
+      const sourceUrl = sourceCandidates.map(v => {
+        const input = norm(v);
+        const info = extractIpfsParts(input);
+        return info?.cid ? buildIpfsUrl(info.cid, info.path || '') : input;
+      }).find(Boolean) || '';
       // OpenSea API v2 returns token.creator as a plain address string; legacy v1 returned an object.
       const creatorRaw = token?.creator || token?.created_by || null;
       const creatorAddress = creatorRaw
@@ -1365,7 +1371,7 @@
         mime: norm(token?.mime_type || token?.content_type || ''),
         cid,
         urn,
-        path: artifactInfo?.path || '',
+        path: '',
         sourceUrl,
         sourceKey: '', // filled in async by loadOpenSeaItems
         tokenUrl: openseaUrl || (contract && tokenId ? `https://opensea.io/assets/ethereum/${contract}/${tokenId}` : ''),
