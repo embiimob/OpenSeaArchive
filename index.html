@@ -1323,7 +1323,8 @@
         token?.token_uri,
         token?.display_image_url,
       ].filter(Boolean);
-      // Always treat OpenSea items as source-upload candidates, even when URLs already contain IPFS CIDs.
+      // Always treat OpenSea items as source-upload candidates, even when URLs already contain IPFS CIDs,
+      // so sync uses a fresh upload path instead of trusting potentially incorrect discovered links.
       const cid = '';
       const urn = '';
       // Pick the best source URL. Prefer animation_url (video/audio) then image URLs, then metadata/token URI.
@@ -1373,7 +1374,7 @@
         urn,
         path: '',
         sourceUrl,
-        sourceKey: '', // filled in async by loadOpenSeaItems
+        sourceKey: '', // filled asynchronously in loadOpenSeaItems() via the needSrcKey block
         tokenUrl: openseaUrl || (contract && tokenId ? `https://opensea.io/assets/ethereum/${contract}/${tokenId}` : ''),
       };
     }
