@@ -741,7 +741,7 @@
         const expiresMs = Date.parse(norm(payload?.expires_at || ''));
         S.openSeaKeyExpiresAtMs = Number.isFinite(expiresMs) && expiresMs > 0
           ? expiresMs
-          : (S.openSeaKeyLastIssuedAtMs + OPEN_SEA_KEY_RENEW_CHECK_MS);
+          : (S.openSeaKeyLastIssuedAtMs + ONE_DAY_MS);
         const limit = res.headers.get('X-RateLimit-Limit');
         const remaining = res.headers.get('X-RateLimit-Remaining');
         const resetRaw = norm(res.headers.get('X-RateLimit-Reset') || '');
