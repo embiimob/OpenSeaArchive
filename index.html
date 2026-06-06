@@ -1326,7 +1326,7 @@
       const collectionOwnerAddr = typeof collectionOwnerRaw === 'string' ? collectionOwnerRaw : '';
       const primaryCollectionOwner = Array.isArray(collection?.owners) ? (collection.owners[0] || {}) : {};
       const creatorAddress = norm(
-        (typeof creatorRaw === 'string' ? creatorRaw : '')
+        (typeof creatorRaw === 'string' && creatorRaw && creatorRaw !== '0x0000000000000000000000000000000000000000' ? creatorRaw : '')
         || pickOpenSeaAccountAddress(creatorObj)
         || token?.creator_address
         || token?.created_by_address
