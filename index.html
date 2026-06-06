@@ -357,7 +357,7 @@
     const FEE_CACHE_TTL = 5 * 60 * 1000;
     const AUTO_SYNC_TICK_MS = 5 * 60 * 1000;
     const DIFF_RECHECK_MS = 60 * 60 * 1000;
-    const OPEN_SEA_KEY_RENEW_MS = 60 * 60 * 1000;
+    const OPEN_SEA_KEY_RENEW_CHECK_MS = 60 * 60 * 1000;
     const QUEUE_DISPLAY_LIMIT = 10;
     const CONFIRMED_DISPLAY_LIMIT = 5;
     const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -741,7 +741,7 @@
         const expiresMs = Date.parse(norm(payload?.expires_at || ''));
         S.openSeaKeyExpiresAtMs = Number.isFinite(expiresMs) && expiresMs > 0
           ? expiresMs
-          : (S.openSeaKeyLastIssuedAtMs + OPEN_SEA_KEY_RENEW_MS);
+          : (S.openSeaKeyLastIssuedAtMs + OPEN_SEA_KEY_RENEW_CHECK_MS);
         const limit = res.headers.get('X-RateLimit-Limit');
         const remaining = res.headers.get('X-RateLimit-Remaining');
         const resetRaw = norm(res.headers.get('X-RateLimit-Reset') || '');
@@ -761,7 +761,7 @@
           resetAt ? `reset ${resetAt}` : '',
         ].filter(Boolean).join(', ');
         appendLog(`${auto ? 'Auto-renewed' : 'Generated'} instant OpenSea API key (${shortText(apiKey, 18)}).${extras ? ` Rate limits: ${extras}.` : ''}`, 'good');
-        setStatus('analysisStatus', `OpenSea API key ${auto ? 'auto-renewed' : 'generated'}${payload?.expires_at ? ` (expires ${payload.expires_at})` : ''}. Auto-renew checks hourly and renews on expiry.`, 'good');
+        setStatus('analysisStatus', `OpenSea API key ${auto ? 'auto-renewed' : 'generated'}${payload?.expires_at ? ` (expires ${payload.expires_at})` : ''}. Auto-renew is enabled and renews on expiry.`, 'good');
       } finally {
         S.openSeaKeyRenewing = false;
         btn.disabled = false;
@@ -1665,7 +1665,7 @@
     }));
 
     setInterval(refreshConfirmationStates, 60000);
-    setInterval(runOpenSeaKeyAutoRenew, OPEN_SEA_KEY_RENEW_MS);
+    setInterval(runOpenSeaKeyAutoRenew, OPEN_SEA_KEY_RENEW_CHECK_MS);
     renderWalletInfo([]);
     renderSummary();
     appendLog('OpenSeaArchive ready.');
