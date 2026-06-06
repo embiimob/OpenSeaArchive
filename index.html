@@ -339,7 +339,12 @@
     const MAX_IPFS_BYTES = 100 * 1024 * 1024;
     const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
     const DELIMITERS = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
-    const CID_RE = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|bafy[a-z2-7]{20,})$/i;
+    const CID_V0_SRC = 'Qm[1-9A-HJ-NP-Za-km-z]{44}';
+    const CID_V1_SRC = 'bafy[a-z2-7]{55}';
+    const CID_ANY_SRC = `(?:${CID_V0_SRC}|${CID_V1_SRC})`;
+    const CID_RE = new RegExp(`^${CID_ANY_SRC}$`, 'i');
+    const CID_LOOSE_RE = new RegExp(`(${CID_ANY_SRC})(?:[\\\\/]+([^<>\\\\s]+))?`, 'i');
+    const CID_TEXT_RE = new RegExp(`\\\\b(${CID_ANY_SRC})\\\\b`, 'ig');
     const IPFS_PATH_RE = /^\/?ipfs\/([a-zA-Z0-9]+)(?:\/(.*))?$/i;
     const UNSAFE_RE = /[^a-zA-Z0-9._-]/g;
     const ADDR_RE = /^[mn][1-9A-HJ-NP-Za-km-z]{25,34}$/;
@@ -360,9 +365,9 @@
       kwCache: new Map(),
       keywordAddress: '',
       keyword: '',
-      objktUser: null,
+      openSeaUser: null,
       p2fkItems: [],
-      objktItems: [],
+      openSeaItems: [],
       comparisonRows: [],
       syncQueue: [],
       syncRunning: false,
@@ -419,7 +424,7 @@
 
     function getApiBase() { return norm($('apiBaseInput').value) || 'https://p2fk.io'; }
     function getMempoolApi() { return norm($('mempoolInput').value) || 'https://mempool.space/testnet/api'; }
-    function getObjktApi() { return norm($('openSeaInput').value) || 'https://api.opensea.io/api/v2'; }
+    function getOpenSeaApi() { return norm($('openSeaInput').value) || 'https://api.opensea.io/api/v2'; }
     function getOpenSeaApiKey() { return norm($('openSeaApiKeyInput').value); }
     function getGatewayBase() {
       const raw = norm($('gatewayInput').value) || 'https://ipfs.io/ipfs/';
@@ -432,7 +437,7 @@
     function renderSummary() {
       const rows = S.comparisonRows || [];
       const totals = {
-        objkt: S.objktItems.length,
+        openSea: S.openSeaItems.length,
         p2fk: S.p2fkItems.length,
         queued: 0,
         syncing: 0,
@@ -450,7 +455,7 @@
       });
       const items = [
         ['Keyword address', S.keywordAddress || '—'],
-        ['OpenSea refs', totals.objkt],
+        ['OpenSea refs', totals.openSea],
         ['p2fk refs', totals.p2fk],
         [`Queue waiting (top ${QUEUE_DISPLAY_LIMIT} shown)`, totals.queued],
         [`Recently confirmed (last ${CONFIRMED_DISPLAY_LIMIT} shown)`, totals.confirmed],
@@ -497,7 +502,7 @@
         return;
       }
       body.innerHTML = displayRows.map(({ row, state }) => {
-        const objkt = row.objktItems[0] || null;
+        const openSea = row.openSeaItems[0] || null;
         const p2fk = row.p2fkItems[0] || null;
         const statusPills = [];
         if (state.status === 'queued') statusPills.push('<span class="pill warn">Queued (waiting)</span>');
@@ -514,14 +519,14 @@
               ${row.urn ? `<div class="mini">${esc(row.urn)}</div>` : ''}
             </td>
             <td>
-              <div><strong>${esc(objkt?.name || '—')}</strong></div>
-              ${objkt?.artistAlias ? `<div class="mini">Artist: ${esc(objkt.artistAlias)}</div>` : `<div class="mini">${esc(objkt?.sourceLabel || '—')}</div>`}
-              ${objkt?.tokenUrl ? `<div class="mini"><a href="${esc(objkt.tokenUrl)}" target="_blank" rel="noreferrer">OpenSea item</a></div>` : ''}
+              <div><strong>${esc(openSea?.name || '—')}</strong></div>
+              ${openSea?.artistAlias ? `<div class="mini">Artist: ${esc(openSea.artistAlias)}</div>` : `<div class="mini">${esc(openSea?.sourceLabel || '—')}</div>`}
+              ${openSea?.tokenUrl ? `<div class="mini"><a href="${esc(openSea.tokenUrl)}" target="_blank" rel="noreferrer">OpenSea item</a></div>` : ''}
             </td>
             <td>
-              <div>${esc(shortText(objkt?.description || '', 220) || 'No description')}</div>
+              <div>${esc(shortText(openSea?.description || '', 220) || 'No description')}</div>
               <div class="mini">Size: ${esc(sizeText)}</div>
-              ${objkt?.artifactUri ? `<div class="mini">Artifact: ${esc(shortText(objkt.artifactUri, 120))}</div>` : ''}
+              ${openSea?.artifactUri ? `<div class="mini">Artifact: ${esc(shortText(openSea.artifactUri, 120))}</div>` : ''}
             </td>
             <td>
               ${p2fk ? `<div class="stack"><div><code>${esc(p2fk.txId || '')}</code></div><div>${esc(shortText(p2fk.message || '', 180) || 'Message only')}</div></div>` : '<span class="muted">No matching CID found at keyword.</span>'}
@@ -533,8 +538,8 @@
             </td>
             <td>
               <div class="btn-row">
-                <button class="small-btn" data-sync-cid="${esc(row.cid)}" ${(!row.hasObjkt || row.hasP2fk) ? 'disabled' : ''}>Sync one</button>
-                <button class="small-btn" data-open-cid="${esc(row.cid)}" ${!objkt?.tokenUrl ? 'disabled' : ''}>Open OpenSea</button>
+                <button class="small-btn" data-sync-cid="${esc(row.cid)}" ${(!row.hasOpenSea || row.hasP2fk) ? 'disabled' : ''}>Sync one</button>
+                <button class="small-btn" data-open-cid="${esc(row.cid)}" ${!openSea?.tokenUrl ? 'disabled' : ''}>Open OpenSea</button>
               </div>
             </td>
           </tr>`;
@@ -542,7 +547,7 @@
       body.querySelectorAll('[data-sync-cid]').forEach(btn => btn.addEventListener('click', () => syncCid(btn.dataset.syncCid)));
       body.querySelectorAll('[data-open-cid]').forEach(btn => btn.addEventListener('click', () => {
         const row = (S.comparisonRows || []).find(item => item.cid === btn.dataset.openCid);
-        const url = row?.objktItems?.[0]?.tokenUrl;
+        const url = row?.openSeaItems?.[0]?.tokenUrl;
         if (url) window.open(url, '_blank', 'noopener,noreferrer');
       }));
       renderSummary();
@@ -610,7 +615,7 @@
         const cid = norm(first || '');
         return CID_RE.test(cid) ? { cid, path: parts.join('/') } : null;
       }
-      const loose = input.match(/((?:Qm[1-9A-HJ-NP-Za-km-z]{44})|(?:bafy[a-z2-7]{20,}))(?:[\\/]+([^<>\s]+))?/i);
+      const loose = input.match(CID_LOOSE_RE);
       if (loose) return { cid: loose[1], path: norm(loose[2] || '') };
       try {
         const u = new URL(input);
@@ -639,7 +644,7 @@
     function extractCidsFromText(input) {
       const found = [];
       const text = String(input ?? '');
-      const matches = text.match(/\b((?:Qm[1-9A-HJ-NP-Za-km-z]{44})|(?:bafy[a-z2-7]{20,}))\b/ig) || [];
+      const matches = text.match(CID_TEXT_RE) || [];
       matches.forEach(cid => { if (CID_RE.test(cid)) found.push(cid); });
       return unique(found);
     }
@@ -675,7 +680,7 @@
     }
 
     async function fetchOpenSea(path, params = {}) {
-      const base = getObjktApi().replace(/\/$/, '');
+      const base = getOpenSeaApi().replace(/\/$/, '');
       const url = new URL(`${base}${path}`);
       Object.entries(params || {}).forEach(([k, v]) => {
         if (v != null && String(v) !== '') url.searchParams.set(k, String(v));
@@ -1098,7 +1103,7 @@
       return [...recipients].map(addr => ({ addr, amount: AMOUNT_PER }));
     }
 
-    async function resolveObjktUser(rawInput) {
+    async function resolveOpenSeaUser(rawInput) {
       const input = norm(rawInput).replace(/^@/, '');
       if (!input) throw new Error('Enter an OpenSea profile name, ENS, or wallet address');
       if (ETH_ADDR_RE.test(input)) return { address: input, alias: '', tzdomain: '', raw: input };
@@ -1127,11 +1132,7 @@
       throw new Error('Could not resolve OpenSea profile. Try a wallet address directly if needed.');
     }
 
-    async function fetchObjktCreated(_address) {
-      return [];
-    }
-
-    async function fetchObjktOwned(address) {
+    async function fetchOpenSeaOwned(address) {
       const all = [];
       let next = '';
       for (let page = 0; page < 200; page += 1) {
@@ -1147,10 +1148,10 @@
       return all;
     }
 
-    async function loadObjktItems(user) {
+    async function loadOpenSeaItems(user) {
       appendLog(`Resolving OpenSea items for ${user.address}…`);
-      const [created, owned] = await Promise.all([fetchObjktCreated(user.address), fetchObjktOwned(user.address)]);
-      const all = [...created, ...owned].map(item => normalizeObjktItem(item, user));
+      const owned = await fetchOpenSeaOwned(user.address);
+      const all = owned.map(item => normalizeOpenSeaItem(item, user));
       const deduped = [];
       const seen = new Set();
       for (const item of all) {
@@ -1159,11 +1160,11 @@
         seen.add(key);
         deduped.push(item);
       }
-      appendLog(`Loaded ${deduped.length} OpenSea entries (${created.length} created, ${owned.length} owned).`, 'good');
+      appendLog(`Loaded ${deduped.length} OpenSea entries (${owned.length} owned).`, 'good');
       return deduped;
     }
 
-    function normalizeObjktItem(entry, user) {
+    function normalizeOpenSeaItem(entry, user) {
       const token = entry?.token || {};
       const contract = norm(token?.contract || token?.contract_address || token?.contractAddress || token?.asset_contract?.address);
       const tokenId = String(token?.identifier ?? token?.token_id ?? token?.tokenId ?? '');
@@ -1265,7 +1266,7 @@
     function buildComparisonRows() {
       const map = new Map();
       const ensure = cid => {
-        if (!map.has(cid)) map.set(cid, { cid, urn: '', p2fkItems: [], objktItems: [], hasP2fk: false, hasObjkt: false, sizeBytes: null, syncState: getSyncState(cid) });
+        if (!map.has(cid)) map.set(cid, { cid, urn: '', p2fkItems: [], openSeaItems: [], hasP2fk: false, hasOpenSea: false, sizeBytes: null, syncState: getSyncState(cid) });
         return map.get(cid);
       };
       S.p2fkItems.filter(item => item.cid).forEach(item => {
@@ -1274,15 +1275,15 @@
         row.p2fkItems.push(item);
         row.hasP2fk = true;
       });
-      S.objktItems.filter(item => item.cid).forEach(item => {
+      S.openSeaItems.filter(item => item.cid).forEach(item => {
         const row = ensure(item.cid);
         row.urn ||= item.urn;
-        row.objktItems.push(item);
-        row.hasObjkt = true;
+        row.openSeaItems.push(item);
+        row.hasOpenSea = true;
       });
       const rows = [...map.values()].sort((a, b) => {
-        const aRank = a.hasObjkt && !a.hasP2fk ? 0 : a.hasObjkt && a.hasP2fk ? 1 : 2;
-        const bRank = b.hasObjkt && !b.hasP2fk ? 0 : b.hasObjkt && b.hasP2fk ? 1 : 2;
+        const aRank = a.hasOpenSea && !a.hasP2fk ? 0 : a.hasOpenSea && a.hasP2fk ? 1 : 2;
+        const bRank = b.hasOpenSea && !b.hasP2fk ? 0 : b.hasOpenSea && b.hasP2fk ? 1 : 2;
         if (aRank !== bRank) return aRank - bRank;
         return a.cid.localeCompare(b.cid);
       });
@@ -1339,14 +1340,14 @@
       appendLog(`Starting analysis for #${keyword} and ${rawUser}.`);
       try {
         S.keyword = keyword;
-        const user = await resolveObjktUser(rawUser);
-        S.objktUser = user;
+        const user = await resolveOpenSeaUser(rawUser);
+        S.openSeaUser = user;
         appendLog(`Resolved OpenSea user to ${user.address}${user.alias ? ` (${user.alias})` : ''}.`, 'good');
-        const [p2fkItems, objktItems] = await Promise.all([loadP2fkItems(keyword), loadObjktItems(user)]);
+        const [p2fkItems, openSeaItems] = await Promise.all([loadP2fkItems(keyword), loadOpenSeaItems(user)]);
         S.p2fkItems = p2fkItems;
-        S.objktItems = objktItems.filter(item => item.cid);
+        S.openSeaItems = openSeaItems.filter(item => item.cid);
         buildComparisonRows();
-        setStatus('analysisStatus', `Analysis complete for #${keyword} and ${user.address}. Found ${S.objktItems.length} OpenSea IPFS refs and ${S.p2fkItems.length} p2fk refs.`, 'good');
+        setStatus('analysisStatus', `Analysis complete for #${keyword} and ${user.address}. Found ${S.openSeaItems.length} OpenSea IPFS refs and ${S.p2fkItems.length} p2fk refs.`, 'good');
       } catch (error) {
         appendLog(`Analysis failed: ${error.message}`, 'bad');
         setStatus('analysisStatus', error.message || 'Analysis failed.', 'bad');
@@ -1357,9 +1358,9 @@
       if (row.sizeBytes) return row.sizeBytes;
       const cached = S.sizeCache.get(row.cid);
       if (cached != null) return cached;
-      const objkt = row.objktItems[0];
-      if (!objkt?.cid) return null;
-      const url = buildIpfsUrl(objkt.cid, objkt.path || '');
+      const openSea = row.openSeaItems[0];
+      if (!openSea?.cid) return null;
+      const url = buildIpfsUrl(openSea.cid, openSea.path || '');
       let size = null;
       try {
         const head = await fetch(url, { method: 'HEAD', cache: 'no-store' });
@@ -1394,15 +1395,15 @@
     }
 
     function buildSyncText(row) {
-      const objkt = row.objktItems[0];
+      const openSea = row.openSeaItems[0];
       const prefix = sanitize($('messagePrefixInput').value);
       const bits = [];
       if (prefix) bits.push(prefix);
-      const artistAlias = norm(objkt?.artistAlias);
+      const artistAlias = norm(openSea?.artistAlias);
       if (artistAlias) bits.push(`Artist: ${artistAlias}`);
-      if (objkt?.name) bits.push(objkt.name);
-      if (objkt?.description) bits.push(objkt.description);
-      if (objkt?.tokenUrl) bits.push(`View on OpenSea: ${objkt.tokenUrl}`);
+      if (openSea?.name) bits.push(openSea.name);
+      if (openSea?.description) bits.push(openSea.description);
+      if (openSea?.tokenUrl) bits.push(`View on OpenSea: ${openSea.tokenUrl}`);
       bits.push(`#${S.keyword}`);
       getExtraKeywords().forEach(tag => bits.push(`#${tag}`));
       return bits.filter(Boolean).join('\n\n');
@@ -1410,7 +1411,7 @@
 
     async function syncCid(cid) {
       const row = (S.comparisonRows || []).find(item => item.cid === cid);
-      if (!row || !row.hasObjkt || row.hasP2fk) return;
+      if (!row || !row.hasOpenSea || row.hasP2fk) return;
       if (!S.keyring) {
         setStatus('analysisStatus', 'Unlock the wallet before syncing.', 'bad');
         return;
@@ -1423,8 +1424,8 @@
           setSyncState(cid, { status: 'too-large', sizeBytes: size, error: 'File is larger than 100 MB.' });
           return;
         }
-        const objkt = row.objktItems[0];
-        const attach = await normalizeAttach(objkt.urn || objkt.artifactUri || objkt.displayUri || `IPFS:${cid}`, { mime: objkt.mime || '' });
+        const openSea = row.openSeaItems[0];
+        const attach = await normalizeAttach(openSea.urn || openSea.artifactUri || openSea.displayUri || `IPFS:${cid}`, { mime: openSea.mime || '' });
         const outputs = await buildMsgOutputs({
           text: buildSyncText(row),
           attachments: [attach.canonical],
@@ -1444,7 +1445,7 @@
 
     function queueUnmatched() {
       const queue = (S.comparisonRows || [])
-        .filter(row => row.hasObjkt && !row.hasP2fk)
+        .filter(row => row.hasOpenSea && !row.hasP2fk)
         .filter(row => !['broadcasted', 'confirmed', 'too-large', 'syncing'].includes(getSyncState(row.cid).status))
         .map(row => row.cid);
       S.syncQueue = queue;
@@ -1453,14 +1454,14 @@
     }
 
     async function runDifferenceQuery() {
-      if (!S.keyword || !S.objktUser) throw new Error('Run analysis before auto difference checks.');
+      if (!S.keyword || !S.openSeaUser) throw new Error('Run analysis before auto difference checks.');
       if (S.diffQueryRunning) return 0;
       S.diffQueryRunning = true;
       try {
-        appendLog(`Running difference query for #${S.keyword} and ${S.objktUser.address} (OpenSea)…`);
-        const [p2fkItems, objktItems] = await Promise.all([loadP2fkItems(S.keyword), loadObjktItems(S.objktUser)]);
+        appendLog(`Running difference query for #${S.keyword} and ${S.openSeaUser.address} (OpenSea)…`);
+        const [p2fkItems, openSeaItems] = await Promise.all([loadP2fkItems(S.keyword), loadOpenSeaItems(S.openSeaUser)]);
         S.p2fkItems = p2fkItems;
-        S.objktItems = objktItems.filter(item => item.cid);
+        S.openSeaItems = openSeaItems.filter(item => item.cid);
         buildComparisonRows();
         const queued = queueUnmatched();
         S.nextDiffQueryAt = queued ? null : Date.now() + DIFF_RECHECK_MS;
@@ -1589,8 +1590,8 @@
       buildComparisonRows,
       parseMsg,
       loadP2fkItems,
-      loadObjktItems,
-      resolveObjktUser,
+      loadOpenSeaItems,
+      resolveOpenSeaUser,
     };
   })();
   </script>
