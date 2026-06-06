@@ -1419,7 +1419,16 @@
           try {
             const payload = await fetchOpenSea(`/accounts/${encodeURIComponent(addr)}`);
             const account = payload?.account || payload || {};
-            const name = norm(account.username || account.display_name || account.name || '');
+            // username / display_name from the account endpoint
+            let name = norm(account.username || account.display_name || account.name || '');
+            // Fallback: try the resolve endpoint which also returns an ENS name
+            if (!name) {
+              try {
+                const rp = await fetchOpenSea(`/accounts/resolve/${encodeURIComponent(addr)}`);
+                const ra = rp?.account || rp || {};
+                name = norm(ra.username || ra.ens_name || ra.display_name || ra.name || '');
+              } catch {}
+            }
             if (name) nameMap.set(addr.toLowerCase(), name);
           } catch {}
         }));
