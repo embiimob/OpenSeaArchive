@@ -1325,8 +1325,8 @@
       ].filter(Boolean);
       // Always treat OpenSea items as source-upload candidates, even when URLs already contain IPFS CIDs,
       // so sync uses a fresh upload path instead of trusting potentially incorrect discovered links.
-      const cid = '';
-      const urn = '';
+      const cid = ''; // intentionally blank to force upload-first sync behavior
+      const urn = ''; // intentionally blank to avoid treating discovered URNs as authoritative
       // Pick the best source URL. Prefer animation_url (video/audio) then image URLs, then metadata/token URI.
       const sourceCandidates = [
         token?.animation_url,
