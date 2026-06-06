@@ -1312,12 +1312,18 @@
     function resolveOpenSeaArtistMeta(token, collectionOverride = null) {
       const creatorRaw = token?.creator || token?.created_by || null;
       const creatorObj = typeof creatorRaw === 'object' && creatorRaw ? creatorRaw : {};
-      const tokenCollection = token?.collection || {};
+      // In OpenSea API v2, token.collection is a plain slug string; treat it as empty object for field access.
+      const tokenCollection = (token?.collection && typeof token.collection === 'object') ? token.collection : {};
+      // collectionOverride is the full collection detail payload from /collections/{slug}.
       const collection = collectionOverride && typeof collectionOverride === 'object'
         ? { ...tokenCollection, ...collectionOverride }
         : tokenCollection;
-      const collectionCreator = collection?.creator || collection?.account || {};
-      const collectionOwner = collection?.owner || collection?.owner_account || {};
+      const collectionCreator = (collection?.creator && typeof collection.creator === 'object') ? collection.creator : {};
+      const collectionCreatorAddr = typeof collection?.creator === 'string' ? collection.creator : '';
+      // In OpenSea API v2, collection.owner is a plain wallet address string (not an object).
+      const collectionOwnerRaw = collection?.owner;
+      const collectionOwner = (collectionOwnerRaw && typeof collectionOwnerRaw === 'object') ? collectionOwnerRaw : {};
+      const collectionOwnerAddr = typeof collectionOwnerRaw === 'string' ? collectionOwnerRaw : '';
       const primaryCollectionOwner = Array.isArray(collection?.owners) ? (collection.owners[0] || {}) : {};
       const creatorAddress = norm(
         (typeof creatorRaw === 'string' ? creatorRaw : '')
@@ -1326,7 +1332,9 @@
         || token?.created_by_address
         || token?.creatorAddress
         || token?.createdBy
+        || collectionCreatorAddr
         || pickOpenSeaAccountAddress(collectionCreator)
+        || collectionOwnerAddr
         || pickOpenSeaAccountAddress(collectionOwner)
         || pickOpenSeaAccountAddress(primaryCollectionOwner)
         || collection?.creator_address
@@ -1354,61 +1362,6 @@
       return !artistAlias || ETH_ADDR_RE.test(artistAlias);
     }
 
-    async function scrapeOpenSeaPageArtist(tokenUrl) {
-      if (!tokenUrl) return '';
-      try {
-        const res = await fetch(tokenUrl, { cache: 'no-store' });
-        if (!res.ok) return '';
-        const html = await res.text();
-
-        // First, try to extract artist from the __NEXT_DATA__ JSON embedded by Next.js.
-        const nextDataMatch = html.match(/<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/);
-        if (nextDataMatch) {
-          try {
-            const nextData = JSON.parse(nextDataMatch[1]);
-            const pages = nextData?.props?.pageProps || nextData?.props || {};
-            const candidates = [
-              pages?.asset?.collection?.owner?.username,
-              pages?.asset?.collection?.owner?.display_name,
-              pages?.asset?.creator?.username,
-              pages?.asset?.creator?.display_name,
-              pages?.nft?.collection?.creator?.username,
-              pages?.nft?.collection?.creator?.display_name,
-              pages?.nft?.creator?.username,
-              pages?.nft?.creator?.display_name,
-              pages?.initialData?.asset?.collection?.owner?.username,
-              pages?.initialData?.nft?.collection?.creator?.username,
-            ];
-            const name = candidates.map(v => norm(v)).find(v => v && !ETH_ADDR_RE.test(v));
-            if (name) return name;
-          } catch {}
-        }
-
-        // Fallback: look for the "A collection by" link in the raw HTML.
-        // OpenSea renders: A collection by <a href="/username">username</a>
-        const collectionByMatch = html.match(/A collection by[\s\S]{0,300}?href="\/([a-zA-Z0-9][a-zA-Z0-9_.-]{1,50})"/);
-        if (collectionByMatch) {
-          const candidate = norm(collectionByMatch[1]);
-          if (candidate && !ETH_ADDR_RE.test(candidate)) return candidate;
-        }
-
-        // Secondary fallback: look for og:site_name / creator meta or JSON-LD author.
-        const jsonLdMatch = html.match(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/g);
-        if (jsonLdMatch) {
-          for (const block of jsonLdMatch) {
-            try {
-              const inner = block.replace(/<script[^>]*>/, '').replace(/<\/script>/, '');
-              const obj = JSON.parse(inner);
-              const creator = obj?.creator?.name || obj?.author?.name || obj?.brand?.name;
-              const name = norm(creator);
-              if (name && !ETH_ADDR_RE.test(name)) return name;
-            } catch {}
-          }
-        }
-      } catch {}
-      return '';
-    }
-
     async function enrichOpenSeaArtistMetadata(items) {
       const targets = items.filter(item => item?.contract && item?.tokenId && needsArtistMetadata(item));
       if (!targets.length) return;
@@ -1422,9 +1375,10 @@
         } catch {}
 
         let collectionDetail = null;
+        // In OpenSea API v2, detailToken.collection is a plain slug string, not an object.
+        const rawTokenCollection = detailToken?.collection;
         const collectionSlug = norm(
-          detailToken?.collection?.slug
-          || detailToken?.collection?.collection
+          (typeof rawTokenCollection === 'string' ? rawTokenCollection : (rawTokenCollection?.slug || rawTokenCollection?.collection))
           || item?.collectionSlug
         );
         if (collectionSlug) {
@@ -1432,7 +1386,8 @@
             collectionCache.set(collectionSlug, (async () => {
               try {
                 const payload = await fetchOpenSea(`/collections/${encodeURIComponent(collectionSlug)}`);
-                return payload?.collection || payload || null;
+                // In OpenSea API v2 the response IS the collection object (payload.collection is the slug string, not the object).
+                return (payload && typeof payload === 'object' && !Array.isArray(payload)) ? payload : null;
               } catch {
                 return null;
               }
@@ -1441,23 +1396,12 @@
           collectionDetail = await collectionCache.get(collectionSlug);
         }
 
-        const artistMeta = resolveOpenSeaArtistMeta(detailToken || {}, collectionDetail || detailToken?.collection || null);
+        const artistMeta = resolveOpenSeaArtistMeta(detailToken || {}, collectionDetail || null);
         if (artistMeta.creatorAddress) item.creatorAddress = artistMeta.creatorAddress;
         if (artistMeta.artistAlias) item.artistAlias = artistMeta.artistAlias;
         const tokenUrl = norm(detailToken?.opensea_url || detailToken?.permalink || detailToken?.asset_url);
         if (tokenUrl) item.tokenUrl = tokenUrl;
       }));
-
-      // Second pass: for items that still have no human-readable artist name, scrape the
-      // OpenSea item page directly and look for the "A collection by" creator link.
-      const stillMissing = targets.filter(item => needsArtistMetadata(item) && item.tokenUrl);
-      if (stillMissing.length) {
-        appendLog(`Scraping OpenSea item page(s) for artist name (${stillMissing.length} item(s))…`);
-        await Promise.allSettled(stillMissing.map(async item => {
-          const name = await scrapeOpenSeaPageArtist(item.tokenUrl);
-          if (name) item.artistAlias = name;
-        }));
-      }
     }
 
     async function loadOpenSeaItems(user) {
@@ -1536,7 +1480,13 @@
         const info = extractIpfsParts(input);
         return info?.cid ? buildIpfsUrl(info.cid, info.path || '') : input;
       }).find(Boolean) || '';
-      const collection = token?.collection || {};
+      // In OpenSea API v2, token.collection is a plain slug string; in older responses it was an object.
+      const collection = (token?.collection && typeof token.collection === 'object') ? token.collection : {};
+      const collectionSlug = norm(
+        (typeof token?.collection === 'string' ? token.collection : undefined)
+        || collection?.slug
+        || collection?.collection
+      );
       const openseaUrl = norm(token?.opensea_url || token?.permalink || token?.asset_url);
       const artistMeta = resolveOpenSeaArtistMeta(token);
       return {
@@ -1560,7 +1510,7 @@
         path: '',
         sourceUrl,
         sourceKey: '', // filled asynchronously in loadOpenSeaItems() via the needSrcKey block
-        collectionSlug: norm(collection?.slug || collection?.collection),
+        collectionSlug,
         tokenUrl: openseaUrl || (contract && tokenId ? `https://opensea.io/assets/ethereum/${contract}/${tokenId}` : ''),
       };
     }
