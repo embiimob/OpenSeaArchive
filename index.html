@@ -280,6 +280,9 @@
         <div class="field">
           <label for="openSeaApiKeyInput">OpenSea API key (optional)</label>
           <input id="openSeaApiKeyInput" placeholder="Optional x-api-key for higher limits" autocomplete="off" spellcheck="false">
+          <div class="btn-row" style="margin-top:8px;">
+            <button id="generateOpenSeaKeyBtn" type="button">Generate instant API key</button>
+          </div>
         </div>
         <div class="btn-row">
           <button id="analyzeBtn" class="primary">Analyze keyword vs OpenSea</button>
@@ -698,6 +701,46 @@
         throw new Error(`OpenSea API HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`);
       }
       return await res.json();
+    }
+
+    async function createOpenSeaInstantApiKey() {
+      const base = getOpenSeaApi().replace(/\/$/, '');
+      const url = `${base}/auth/keys`;
+      const btn = $('generateOpenSeaKeyBtn');
+      const prev = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Generating…';
+      setStatus('analysisStatus', 'Requesting instant OpenSea API key…');
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { Accept: 'application/json' },
+          cache: 'no-store',
+        });
+        let payload = null;
+        try { payload = await res.json(); } catch {}
+        if (!res.ok) {
+          const detail = payload && typeof payload === 'object' ? JSON.stringify(payload).slice(0, 200) : '';
+          throw new Error(`OpenSea key request failed (HTTP ${res.status})${detail ? `: ${detail}` : ''}`);
+        }
+        const apiKey = norm(payload?.api_key);
+        if (!apiKey) throw new Error('OpenSea response did not include api_key.');
+        $('openSeaApiKeyInput').value = apiKey;
+        const limit = res.headers.get('X-RateLimit-Limit');
+        const remaining = res.headers.get('X-RateLimit-Remaining');
+        const resetEpoch = Number(res.headers.get('X-RateLimit-Reset'));
+        const resetAt = Number.isFinite(resetEpoch) && resetEpoch > 0 ? new Date(resetEpoch * 1000).toLocaleString() : '';
+        const extras = [
+          limit ? `limit ${limit}` : '',
+          remaining ? `remaining ${remaining}` : '',
+          resetAt ? `reset ${resetAt}` : '',
+        ].filter(Boolean).join(', ');
+        appendLog(`Generated instant OpenSea API key (${shortText(apiKey, 18)}).${extras ? ` Rate limits: ${extras}.` : ''}`, 'good');
+        setStatus('analysisStatus', `OpenSea API key generated${payload?.expires_at ? ` (expires ${payload.expires_at})` : ''}.`, 'good');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prev;
+      }
     }
 
     function parseMsg(text) {
@@ -1572,6 +1615,10 @@
     $('analyzeBtn').addEventListener('click', analyze);
     $('startSyncBtn').addEventListener('click', startAutoSync);
     $('stopSyncBtn').addEventListener('click', stopAutoSync);
+    $('generateOpenSeaKeyBtn').addEventListener('click', () => createOpenSeaInstantApiKey().catch(err => {
+      appendLog(err.message || 'OpenSea key generation failed.', 'bad');
+      setStatus('analysisStatus', err.message || 'OpenSea key generation failed.', 'bad');
+    }));
 
     setInterval(refreshConfirmationStates, 60000);
     renderWalletInfo([]);
