@@ -1354,6 +1354,61 @@
       return !artistAlias || ETH_ADDR_RE.test(artistAlias);
     }
 
+    async function scrapeOpenSeaPageArtist(tokenUrl) {
+      if (!tokenUrl) return '';
+      try {
+        const res = await fetch(tokenUrl, { cache: 'no-store' });
+        if (!res.ok) return '';
+        const html = await res.text();
+
+        // First, try to extract artist from the __NEXT_DATA__ JSON embedded by Next.js.
+        const nextDataMatch = html.match(/<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/);
+        if (nextDataMatch) {
+          try {
+            const nextData = JSON.parse(nextDataMatch[1]);
+            const pages = nextData?.props?.pageProps || nextData?.props || {};
+            const candidates = [
+              pages?.asset?.collection?.owner?.username,
+              pages?.asset?.collection?.owner?.display_name,
+              pages?.asset?.creator?.username,
+              pages?.asset?.creator?.display_name,
+              pages?.nft?.collection?.creator?.username,
+              pages?.nft?.collection?.creator?.display_name,
+              pages?.nft?.creator?.username,
+              pages?.nft?.creator?.display_name,
+              pages?.initialData?.asset?.collection?.owner?.username,
+              pages?.initialData?.nft?.collection?.creator?.username,
+            ];
+            const name = candidates.map(v => norm(v)).find(v => v && !ETH_ADDR_RE.test(v));
+            if (name) return name;
+          } catch {}
+        }
+
+        // Fallback: look for the "A collection by" link in the raw HTML.
+        // OpenSea renders: A collection by <a href="/username">username</a>
+        const collectionByMatch = html.match(/A collection by[\s\S]{0,300}?href="\/([a-zA-Z0-9][a-zA-Z0-9_.-]{1,50})"/);
+        if (collectionByMatch) {
+          const candidate = norm(collectionByMatch[1]);
+          if (candidate && !ETH_ADDR_RE.test(candidate)) return candidate;
+        }
+
+        // Secondary fallback: look for og:site_name / creator meta or JSON-LD author.
+        const jsonLdMatch = html.match(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/g);
+        if (jsonLdMatch) {
+          for (const block of jsonLdMatch) {
+            try {
+              const inner = block.replace(/<script[^>]*>/, '').replace(/<\/script>/, '');
+              const obj = JSON.parse(inner);
+              const creator = obj?.creator?.name || obj?.author?.name || obj?.brand?.name;
+              const name = norm(creator);
+              if (name && !ETH_ADDR_RE.test(name)) return name;
+            } catch {}
+          }
+        }
+      } catch {}
+      return '';
+    }
+
     async function enrichOpenSeaArtistMetadata(items) {
       const targets = items.filter(item => item?.contract && item?.tokenId && needsArtistMetadata(item));
       if (!targets.length) return;
@@ -1392,6 +1447,17 @@
         const tokenUrl = norm(detailToken?.opensea_url || detailToken?.permalink || detailToken?.asset_url);
         if (tokenUrl) item.tokenUrl = tokenUrl;
       }));
+
+      // Second pass: for items that still have no human-readable artist name, scrape the
+      // OpenSea item page directly and look for the "A collection by" creator link.
+      const stillMissing = targets.filter(item => needsArtistMetadata(item) && item.tokenUrl);
+      if (stillMissing.length) {
+        appendLog(`Scraping OpenSea item page(s) for artist name (${stillMissing.length} item(s))…`);
+        await Promise.allSettled(stillMissing.map(async item => {
+          const name = await scrapeOpenSeaPageArtist(item.tokenUrl);
+          if (name) item.artistAlias = name;
+        }));
+      }
     }
 
     async function loadOpenSeaItems(user) {
