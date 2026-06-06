@@ -1266,6 +1266,26 @@
       appendLog(`Resolving OpenSea items for ${user.address}…`);
       const owned = await fetchOpenSeaOwned(user.address);
       const all = owned.map(item => normalizeOpenSeaItem(item, user));
+
+      // Resolve unique creator addresses to OpenSea usernames in parallel.
+      const uniqueCreators = [...new Set(all.map(item => item.creatorAddress).filter(a => ETH_ADDR_RE.test(a)))];
+      if (uniqueCreators.length) {
+        const nameMap = new Map();
+        await Promise.allSettled(uniqueCreators.map(async addr => {
+          try {
+            const payload = await fetchOpenSea(`/accounts/${encodeURIComponent(addr)}`);
+            const account = payload?.account || payload || {};
+            const name = norm(account.username || account.display_name || account.name || '');
+            if (name) nameMap.set(addr.toLowerCase(), name);
+          } catch {}
+        }));
+        for (const item of all) {
+          if (!item.creatorAddress) continue;
+          const resolvedName = nameMap.get(item.creatorAddress.toLowerCase());
+          if (resolvedName) item.artistAlias = resolvedName;
+        }
+      }
+
       const deduped = [];
       const seen = new Set();
       for (const item of all) {
@@ -1293,19 +1313,26 @@
       const artifactInfo = artifactCandidates.map(v => extractIpfsParts(v)).find(Boolean) || null;
       const cid = artifactInfo?.cid || '';
       const urn = artifactInfo ? `IPFS:${artifactInfo.cid}${artifactInfo.path ? `/${artifactInfo.path}` : ''}` : '';
-      const creator = token?.creator || token?.created_by || token?.owner || {};
+      // OpenSea API v2 returns token.creator as a plain address string; legacy v1 returned an object.
+      const creatorRaw = token?.creator || token?.created_by || null;
+      const creatorAddress = creatorRaw
+        ? (typeof creatorRaw === 'string' ? norm(creatorRaw) : norm(creatorRaw?.address || ''))
+        : '';
+      const creatorNameFromObj = typeof creatorRaw === 'object' && creatorRaw
+        ? norm(creatorRaw?.username || creatorRaw?.display_name || '')
+        : '';
       const collection = token?.collection || {};
       const openseaUrl = norm(token?.opensea_url || token?.permalink || token?.asset_url);
-      const artistAlias = [
-        norm(creator?.username || creator?.display_name || creator?.address),
-        norm(collection?.name),
-      ].filter(Boolean).join(', ');
+      // artistAlias: use name embedded in creator object if present; resolved name is patched in by
+      // loadOpenSeaItems after an async accounts lookup. Never fall back to the current owner.
+      const artistAlias = creatorNameFromObj || creatorAddress || norm(collection?.name) || '';
       return {
         source: entry.source,
         sourceLabel: entry.source === 'created' ? 'OpenSea / created' : 'OpenSea / owned',
         ownerAddress: user.address,
         ownerAlias: user.alias || user.raw || user.address,
-        artistAlias: artistAlias || user.alias || user.raw || user.address,
+        artistAlias,
+        creatorAddress,
         contract,
         tokenId,
         name: norm(token?.name) || '(untitled)',
