@@ -728,8 +728,17 @@
         $('openSeaApiKeyInput').value = apiKey;
         const limit = res.headers.get('X-RateLimit-Limit');
         const remaining = res.headers.get('X-RateLimit-Remaining');
-        const resetEpoch = Number(res.headers.get('X-RateLimit-Reset'));
-        const resetAt = Number.isFinite(resetEpoch) && resetEpoch > 0 ? new Date(resetEpoch * 1000).toLocaleString() : '';
+        const resetRaw = norm(res.headers.get('X-RateLimit-Reset') || '');
+        let resetAt = '';
+        if (/^\d+$/.test(resetRaw)) {
+          const resetNum = Number(resetRaw);
+          const resetMs = resetNum > 1e12 ? resetNum : resetNum * 1000;
+          const minMs = Date.now() - (24 * 60 * 60 * 1000);
+          const maxMs = Date.now() + (10 * 365 * 24 * 60 * 60 * 1000);
+          if (Number.isFinite(resetMs) && resetMs >= minMs && resetMs <= maxMs) {
+            resetAt = new Date(resetMs).toLocaleString();
+          }
+        }
         const extras = [
           limit ? `limit ${limit}` : '',
           remaining ? `remaining ${remaining}` : '',
