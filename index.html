@@ -574,7 +574,8 @@
             </td>
             <td>
               <div><strong>${esc(openSea?.name || '—')}</strong></div>
-              ${openSea?.artistAlias ? `<div class="mini">Artist: ${esc(openSea.artistAlias)}</div>` : `<div class="mini">${esc(openSea?.sourceLabel || '—')}</div>`}
+              <div class="mini">${esc(openSea?.sourceLabel || '—')}</div>
+              <div class="mini">Artist: ${esc(openSea?.artistAlias || openSea?.creatorAddress || 'not provided by OpenSea')}</div>
               ${openSea?.tokenUrl ? `<div class="mini"><a href="${esc(openSea.tokenUrl)}" target="_blank" rel="noreferrer">OpenSea item</a></div>` : ''}
             </td>
             <td>
@@ -1356,12 +1357,32 @@
       }).find(Boolean) || '';
       // OpenSea API v2 returns token.creator as a plain address string; legacy v1 returned an object.
       const creatorRaw = token?.creator || token?.created_by || null;
-      const creatorAddress = creatorRaw
-        ? (typeof creatorRaw === 'string' ? norm(creatorRaw) : norm(creatorRaw?.address || ''))
-        : '';
-      const creatorNameFromObj = typeof creatorRaw === 'object' && creatorRaw
-        ? norm(creatorRaw?.username || creatorRaw?.display_name || '')
-        : '';
+      const creatorObj = typeof creatorRaw === 'object' && creatorRaw ? creatorRaw : {};
+      const creatorAddress = norm(
+        (typeof creatorRaw === 'string' ? creatorRaw : '')
+        || creatorObj?.address
+        || creatorObj?.wallet_address
+        || creatorObj?.account?.address
+        || token?.creator_address
+        || token?.created_by_address
+        || token?.creatorAddress
+        || token?.createdBy
+      );
+      const creatorNameFromObj = norm(
+        creatorObj?.username
+        || creatorObj?.display_name
+        || creatorObj?.name
+        || creatorObj?.user?.username
+        || creatorObj?.user?.display_name
+        || creatorObj?.account?.username
+        || creatorObj?.account?.display_name
+        || token?.artist
+        || token?.artist_name
+        || token?.creator_name
+        || token?.collection?.creator?.username
+        || token?.collection?.creator?.display_name
+        || token?.collection?.creator?.name
+      );
       const collection = token?.collection || {};
       const openseaUrl = norm(token?.opensea_url || token?.permalink || token?.asset_url);
       // artistAlias: use name embedded in creator object if present; resolved name is patched in by
