@@ -1282,10 +1282,124 @@
       return all;
     }
 
+    function pickOpenSeaAccountName(account) {
+      if (!account || typeof account !== 'object') return '';
+      return norm(
+        account.username
+        || account.display_name
+        || account.name
+        || account.alias
+        || account.user?.username
+        || account.user?.display_name
+        || account.user?.name
+        || account.account?.username
+        || account.account?.display_name
+        || account.account?.name
+      );
+    }
+
+    function pickOpenSeaAccountAddress(account) {
+      if (!account || typeof account !== 'object') return '';
+      return norm(
+        account.address
+        || account.wallet_address
+        || account.walletAddress
+        || account.account?.address
+        || account.user?.address
+      );
+    }
+
+    function resolveOpenSeaArtistMeta(token, collectionOverride = null) {
+      const creatorRaw = token?.creator || token?.created_by || null;
+      const creatorObj = typeof creatorRaw === 'object' && creatorRaw ? creatorRaw : {};
+      const tokenCollection = token?.collection || {};
+      const collection = collectionOverride && typeof collectionOverride === 'object'
+        ? { ...tokenCollection, ...collectionOverride }
+        : tokenCollection;
+      const collectionCreator = collection?.creator || collection?.account || {};
+      const collectionOwner = collection?.owner || collection?.owner_account || {};
+      const primaryCollectionOwner = Array.isArray(collection?.owners) ? (collection.owners[0] || {}) : {};
+      const creatorAddress = norm(
+        (typeof creatorRaw === 'string' ? creatorRaw : '')
+        || pickOpenSeaAccountAddress(creatorObj)
+        || token?.creator_address
+        || token?.created_by_address
+        || token?.creatorAddress
+        || token?.createdBy
+        || pickOpenSeaAccountAddress(collectionCreator)
+        || pickOpenSeaAccountAddress(collectionOwner)
+        || pickOpenSeaAccountAddress(primaryCollectionOwner)
+        || collection?.creator_address
+        || collection?.created_by_address
+        || collection?.owner_address
+      );
+      const creatorName = norm(
+        pickOpenSeaAccountName(creatorObj)
+        || token?.artist
+        || token?.artist_name
+        || token?.creator_name
+        || pickOpenSeaAccountName(collectionCreator)
+        || pickOpenSeaAccountName(collectionOwner)
+        || pickOpenSeaAccountName(primaryCollectionOwner)
+        || collection?.creator_name
+      );
+      return {
+        creatorAddress,
+        artistAlias: creatorName || creatorAddress || '',
+      };
+    }
+
+    function needsArtistMetadata(item) {
+      const artistAlias = norm(item?.artistAlias);
+      return !artistAlias || ETH_ADDR_RE.test(artistAlias);
+    }
+
+    async function enrichOpenSeaArtistMetadata(items) {
+      const targets = items.filter(item => item?.contract && item?.tokenId && needsArtistMetadata(item));
+      if (!targets.length) return;
+      appendLog(`Looking up richer OpenSea metadata for ${targets.length} item(s)…`);
+      const collectionCache = new Map();
+      await Promise.allSettled(targets.map(async item => {
+        let detailToken = null;
+        try {
+          const payload = await fetchOpenSea(`/chain/ethereum/contract/${encodeURIComponent(item.contract)}/nfts/${encodeURIComponent(item.tokenId)}`);
+          detailToken = payload?.nft || payload?.token || payload || null;
+        } catch {}
+
+        let collectionDetail = null;
+        const collectionSlug = norm(
+          detailToken?.collection?.slug
+          || detailToken?.collection?.collection
+          || item?.collectionSlug
+        );
+        if (collectionSlug) {
+          if (!collectionCache.has(collectionSlug)) {
+            collectionCache.set(collectionSlug, (async () => {
+              try {
+                const payload = await fetchOpenSea(`/collections/${encodeURIComponent(collectionSlug)}`);
+                return payload?.collection || payload || null;
+              } catch {
+                return null;
+              }
+            })());
+          }
+          collectionDetail = await collectionCache.get(collectionSlug);
+        }
+
+        const artistMeta = resolveOpenSeaArtistMeta(detailToken || {}, collectionDetail || detailToken?.collection || null);
+        if (artistMeta.creatorAddress) item.creatorAddress = artistMeta.creatorAddress;
+        if (artistMeta.artistAlias) item.artistAlias = artistMeta.artistAlias;
+        const tokenUrl = norm(detailToken?.opensea_url || detailToken?.permalink || detailToken?.asset_url);
+        if (tokenUrl) item.tokenUrl = tokenUrl;
+      }));
+    }
+
     async function loadOpenSeaItems(user) {
       appendLog(`Resolving OpenSea items for ${user.address}…`);
       const owned = await fetchOpenSeaOwned(user.address);
       const all = owned.map(item => normalizeOpenSeaItem(item, user));
+
+      await enrichOpenSeaArtistMetadata(all);
 
       // Resolve unique creator addresses to OpenSea usernames in parallel.
       const uniqueCreators = [...new Set(all.map(item => item.creatorAddress).filter(a => ETH_ADDR_RE.test(a)))];
@@ -1356,46 +1470,16 @@
         const info = extractIpfsParts(input);
         return info?.cid ? buildIpfsUrl(info.cid, info.path || '') : input;
       }).find(Boolean) || '';
-      // OpenSea API v2 returns token.creator as a plain address string; legacy v1 returned an object.
-      const creatorRaw = token?.creator || token?.created_by || null;
-      const creatorObj = typeof creatorRaw === 'object' && creatorRaw ? creatorRaw : {};
-      const creatorAddress = norm(
-        (typeof creatorRaw === 'string' ? creatorRaw : '')
-        || creatorObj?.address
-        || creatorObj?.wallet_address
-        || creatorObj?.account?.address
-        || token?.creator_address
-        || token?.created_by_address
-        || token?.creatorAddress
-        || token?.createdBy
-      );
-      const creatorNameFromObj = norm(
-        creatorObj?.username
-        || creatorObj?.display_name
-        || creatorObj?.name
-        || creatorObj?.user?.username
-        || creatorObj?.user?.display_name
-        || creatorObj?.account?.username
-        || creatorObj?.account?.display_name
-        || token?.artist
-        || token?.artist_name
-        || token?.creator_name
-        || token?.collection?.creator?.username
-        || token?.collection?.creator?.display_name
-        || token?.collection?.creator?.name
-      );
       const collection = token?.collection || {};
       const openseaUrl = norm(token?.opensea_url || token?.permalink || token?.asset_url);
-      // artistAlias: prefer creator fields from the token, then fall back to the resolved OpenSea
-      // profile alias we analyzed when creator metadata is omitted from the NFT payload.
-      const artistAlias = creatorNameFromObj || creatorAddress || norm(user?.alias) || norm(collection?.name) || '';
+      const artistMeta = resolveOpenSeaArtistMeta(token);
       return {
         source: entry.source,
         sourceLabel: entry.source === 'created' ? 'OpenSea / created' : 'OpenSea / owned',
         ownerAddress: user.address,
         ownerAlias: user.alias || user.raw || user.address,
-        artistAlias,
-        creatorAddress,
+        artistAlias: artistMeta.artistAlias,
+        creatorAddress: artistMeta.creatorAddress,
         contract,
         tokenId,
         name: norm(token?.name) || '(untitled)',
@@ -1410,6 +1494,7 @@
         path: '',
         sourceUrl,
         sourceKey: '', // filled asynchronously in loadOpenSeaItems() via the needSrcKey block
+        collectionSlug: norm(collection?.slug || collection?.collection),
         tokenUrl: openseaUrl || (contract && tokenId ? `https://opensea.io/assets/ethereum/${contract}/${tokenId}` : ''),
       };
     }
