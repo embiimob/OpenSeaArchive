@@ -564,6 +564,7 @@
         if (state.status === 'too-large') statusPills.push('<span class="pill bad">Over 100 MB</span>');
         if (state.status === 'error') statusPills.push(`<span class="pill bad">${esc(shortText(state.error || 'Error', 50))}</span>`);
         const sizeText = row.sizeBytes ? fmtBytes(row.sizeBytes) : (state.sizeBytes ? fmtBytes(state.sizeBytes) : 'not checked');
+        const artistPreview = norm(openSea?.artistAlias || openSea?.creatorAddress);
         const cidDisplay = row.cid
           ? `<code>${esc(row.cid)}</code>${row.urn ? `<div class="mini">${esc(row.urn)}</div>` : ''}`
           : `<span class="pill warn">Non-IPFS</span>${row.sourceKey ? `<div class="mini"><code title="${esc(row.sourceUrl)}">${esc(shortText(row.sourceKey, 20))}</code></div>` : ''}${state.uploadedCid ? `<div class="mini">Uploaded: <code>${esc(state.uploadedCid)}</code></div>` : ''}`;
@@ -575,7 +576,7 @@
             <td>
               <div><strong>${esc(openSea?.name || '—')}</strong></div>
               <div class="mini">${esc(openSea?.sourceLabel || '—')}</div>
-              <div class="mini">Artist: ${esc(openSea?.artistAlias || openSea?.creatorAddress || 'not provided by OpenSea')}</div>
+              <div class="mini">Artist: ${esc(artistPreview ? (ETH_ADDR_RE.test(artistPreview) ? shortAddr(artistPreview) : artistPreview) : 'not provided by OpenSea')}</div>
               ${openSea?.tokenUrl ? `<div class="mini"><a href="${esc(openSea.tokenUrl)}" target="_blank" rel="noreferrer">OpenSea item</a></div>` : ''}
             </td>
             <td>
