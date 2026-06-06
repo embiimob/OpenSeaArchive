@@ -281,7 +281,7 @@
           <label for="openSeaApiKeyInput">OpenSea API key (optional)</label>
           <input id="openSeaApiKeyInput" placeholder="Optional x-api-key for higher limits" autocomplete="off" spellcheck="false">
           <div class="btn-row" style="margin-top:8px;">
-            <button id="generateOpenSeaKeyBtn" type="button">Generate instant API key</button>
+            <button id="generateOpenSeaKeyBtn" type="button" aria-label="Generate OpenSea API key">Generate instant API key</button>
           </div>
         </div>
         <div class="btn-row">
@@ -359,6 +359,8 @@
     const DIFF_RECHECK_MS = 60 * 60 * 1000;
     const QUEUE_DISPLAY_LIMIT = 10;
     const CONFIRMED_DISPLAY_LIMIT = 5;
+    const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+    const TEN_YEARS_MS = 10 * 365 * ONE_DAY_MS;
 
     const S = {
       priv: null,
@@ -730,11 +732,11 @@
         const remaining = res.headers.get('X-RateLimit-Remaining');
         const resetRaw = norm(res.headers.get('X-RateLimit-Reset') || '');
         let resetAt = '';
-        if (/^\d+$/.test(resetRaw)) {
-          const resetNum = Number(resetRaw);
+        const resetNum = Number(resetRaw);
+        if (Number.isInteger(resetNum) && resetNum > 0) {
           const resetMs = resetNum > 1e12 ? resetNum : resetNum * 1000;
-          const minMs = Date.now() - (24 * 60 * 60 * 1000);
-          const maxMs = Date.now() + (10 * 365 * 24 * 60 * 60 * 1000);
+          const minMs = Date.now() - ONE_DAY_MS;
+          const maxMs = Date.now() + TEN_YEARS_MS;
           if (Number.isFinite(resetMs) && resetMs >= minMs && resetMs <= maxMs) {
             resetAt = new Date(resetMs).toLocaleString();
           }
