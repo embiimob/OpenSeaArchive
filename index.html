@@ -761,7 +761,7 @@
           resetAt ? `reset ${resetAt}` : '',
         ].filter(Boolean).join(', ');
         appendLog(`${auto ? 'Auto-renewed' : 'Generated'} instant OpenSea API key (${shortText(apiKey, 18)}).${extras ? ` Rate limits: ${extras}.` : ''}`, 'good');
-        setStatus('analysisStatus', `OpenSea API key ${auto ? 'auto-renewed' : 'generated'}${payload?.expires_at ? ` (expires ${payload.expires_at})` : ''}. Auto-renew runs every hour.`, 'good');
+        setStatus('analysisStatus', `OpenSea API key ${auto ? 'auto-renewed' : 'generated'}${payload?.expires_at ? ` (expires ${payload.expires_at})` : ''}. Auto-renew checks hourly and renews on expiry.`, 'good');
       } finally {
         S.openSeaKeyRenewing = false;
         btn.disabled = false;
@@ -775,7 +775,7 @@
       const currentKey = norm($('openSeaApiKeyInput').value);
       if (!currentKey) return true;
       if (S.openSeaKeyExpiresAtMs && nowMs >= S.openSeaKeyExpiresAtMs) return true;
-      return nowMs - (S.openSeaKeyLastIssuedAtMs || 0) >= OPEN_SEA_KEY_RENEW_MS;
+      return false;
     }
 
     async function runOpenSeaKeyAutoRenew() {
