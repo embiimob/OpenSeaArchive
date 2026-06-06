@@ -343,7 +343,8 @@
     const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
     const DELIMITERS = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
     const CID_V0_SRC = 'Qm[1-9A-HJ-NP-Za-km-z]{44}';
-    const CID_V1_SRC = 'bafy[a-z2-7]{55}';
+    // CIDv1 base32 form across codecs (e.g. bafy..., bafk...)
+    const CID_V1_SRC = 'b[a-z2-7]{30,120}';
     const CID_ANY_SRC = `(?:${CID_V0_SRC}|${CID_V1_SRC})`;
     const CID_RE = new RegExp(`^${CID_ANY_SRC}$`, 'i');
     const CID_LOOSE_RE = new RegExp(`(${CID_ANY_SRC})(?:[\\\\/]+([^<>\\\\s]+))?`, 'i');
@@ -353,7 +354,7 @@
     // Returns the CIDv0 string on success, or null if the CID cannot be converted.
     function cidV1ToV0(cid) {
       const c = norm(cid);
-      if (!/^bafy[a-z2-7]+$/i.test(c)) return null;
+      if (!/^b[a-z2-7]+$/i.test(c)) return null;
       const B32 = 'abcdefghijklmnopqrstuvwxyz234567';
       const b32str = c.slice(1).toLowerCase(); // strip 'b' multibase prefix
       let bits = 0, bitsLen = 0;
@@ -372,7 +373,7 @@
     }
     // Return the CIDv0 form of a CID when the input is a convertible CIDv1, otherwise return as-is.
     function normalizeCid(cid) {
-      if (/^bafy/i.test(cid)) { const v0 = cidV1ToV0(cid); if (v0) return v0; }
+      if (/^b/i.test(cid)) { const v0 = cidV1ToV0(cid); if (v0) return v0; }
       return cid;
     }
     const UNSAFE_RE = /[^a-zA-Z0-9._-]/g;
