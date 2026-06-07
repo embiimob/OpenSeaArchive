@@ -364,7 +364,7 @@
     const CID_TEXT_RE = new RegExp(`\\\\b(${CID_ANY_SRC})\\\\b`, 'ig');
     const IPFS_PATH_RE = /^\/?ipfs\/([a-zA-Z0-9]+)(?:\/(.*))?$/i;
     const SRC_KEY_RE = /src-key:([0-9a-f]{64})/gi;
-    const HIDDEN_TOKEN_WRAP = value => `<<${value}>>`;
+    const wrapHiddenToken = value => `<<${value}>>`;
     // Convert a CIDv1 (bafy…, dag-pb + sha2-256 only) to its CIDv0 (Qm…) equivalent.
     // Returns the CIDv0 string on success, or null if the CID cannot be converted.
     function cidV1ToV0(cid) {
@@ -1740,7 +1740,7 @@
         S.processedSrcKeys.clear();
         const srcKeyRe = new RegExp(SRC_KEY_RE.source, 'gi');
         p2fkItems.forEach(item => {
-          // rawRoot.message keeps hidden <<...>> tokens; item.message is user-visible cleaned text.
+          // rawRoot is the full normalizeRoot payload; rawRoot.message keeps hidden <<...>> tokens while item.message is cleaned display text.
           const text = item.rawRoot?.message ?? item.message ?? '';
           let m;
           while ((m = srcKeyRe.exec(text)) !== null) S.processedSrcKeys.add(m[1].toLowerCase());
@@ -1813,7 +1813,7 @@
       bits.push(`#${S.keyword}`);
       getExtraKeywords().forEach(tag => bits.push(`#${tag}`));
       // Embed source URL hash in hidden token so future scans can detect this non-IPFS item was already archived.
-      if (!row.cid && row.sourceKey) bits.push(HIDDEN_TOKEN_WRAP(`src-key:${row.sourceKey}`));
+      if (!row.cid && row.sourceKey) bits.push(wrapHiddenToken(`src-key:${row.sourceKey}`));
       return bits.filter(Boolean).join('\n\n');
     }
 
@@ -1944,7 +1944,7 @@
         S.processedSrcKeys.clear();
         const srcKeyRe2 = new RegExp(SRC_KEY_RE.source, 'gi');
         p2fkItems.forEach(item => {
-          // rawRoot.message keeps hidden <<...>> tokens; item.message is user-visible cleaned text.
+          // rawRoot is the full normalizeRoot payload; rawRoot.message keeps hidden <<...>> tokens while item.message is cleaned display text.
           const text = item.rawRoot?.message ?? item.message ?? '';
           let m;
           while ((m = srcKeyRe2.exec(text)) !== null) S.processedSrcKeys.add(m[1].toLowerCase());
