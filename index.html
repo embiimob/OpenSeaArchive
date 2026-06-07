@@ -401,6 +401,8 @@
     const DIFF_RECHECK_MS = 60 * 60 * 1000;
     const OPEN_SEA_KEY_RENEW_CHECK_MS = 60 * 60 * 1000;
     const DEFAULT_OPEN_SEA_KEY_EXPIRY_MS = 24 * 60 * 60 * 1000;
+    const RETRY_ATTEMPTS = 2;
+    const RETRY_PAUSE_MS = 15000;
     const QUEUE_DISPLAY_LIMIT = 10;
     const CONFIRMED_DISPLAY_LIMIT = 5;
     const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -442,6 +444,7 @@
     const sanitize = msg => norm(String(msg ?? '')).replace(/[<>]/g,' ');
     const utf8len = v => new TextEncoder().encode(String(v ?? '')).length;
     const isAddr = v => ADDR_RE.test(norm(v));
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     const shortAddr = v => { const t = norm(v); return t.length > 16 ? `${t.slice(0,8)}…${t.slice(-5)}` : t; };
     const shortText = (v, n = 110) => { const t = norm(v).replace(/\s+/g, ' '); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
     const fmtTez = sat => `${(Number(sat || 0) / 1e8).toFixed(8)} tBTC`;
@@ -494,28 +497,28 @@
         openSea: S.openSeaItems.length,
         p2fk: S.p2fkItems.length,
         queued: 0,
+        failed: 0,
         syncing: 0,
         broadcasted: 0,
         confirmed: 0,
-        tooLarge: 0,
       };
       rows.forEach(row => {
         const status = getSyncState(row.rowKey).status;
         if (status === 'queued') totals.queued += 1;
+        if (status === 'failed') totals.failed += 1;
         if (status === 'syncing') totals.syncing += 1;
         if (status === 'broadcasted') totals.broadcasted += 1;
         if (status === 'confirmed') totals.confirmed += 1;
-        if (status === 'too-large') totals.tooLarge += 1;
       });
       const items = [
         ['Keyword address', S.keywordAddress || '—'],
         ['OpenSea refs', totals.openSea],
         ['p2fk refs', totals.p2fk],
         [`Queue waiting (top ${QUEUE_DISPLAY_LIMIT} shown)`, totals.queued],
+        ['Failed (stays visible)', totals.failed],
         [`Recently confirmed (last ${CONFIRMED_DISPLAY_LIMIT} shown)`, totals.confirmed],
         ['Currently syncing', totals.syncing],
         ['Broadcasted waiting confirm', totals.broadcasted],
-        ['Too large', totals.tooLarge],
         ['Auto sync active', S.syncRunning ? 'yes' : 'no'],
       ];
       $('summaryGrid').innerHTML = items.map(([k, v]) => `<div class="summary-item"><span class="muted">${esc(k)}</span><strong>${esc(String(v))}</strong></div>`).join('');
@@ -528,6 +531,7 @@
     function setSyncState(rowKey, patch) {
       const next = { ...(S.syncStateByCid.get(rowKey) || {}), ...patch };
       if (patch.status === 'queued' && !next.queuedAt) next.queuedAt = Date.now();
+      if (patch.status === 'failed') next.failedAt = Date.now();
       if (patch.status === 'confirmed' && !next.confirmedAt) next.confirmedAt = Date.now();
       S.syncStateByCid.set(rowKey, next);
       const row = (S.comparisonRows || []).find(item => item.rowKey === rowKey);
@@ -541,16 +545,19 @@
       const rows = S.comparisonRows || [];
       const rowsWithState = rows.map(row => ({ row, state: getSyncState(row.rowKey) }));
       const queueRows = rowsWithState
-        .filter(item => item.state.status === 'queued')
+        .filter(item => item.state.status === 'queued' && !item.row.hasP2fk)
         .sort((a, b) => (a.state.queueRank ?? Number.MAX_SAFE_INTEGER) - (b.state.queueRank ?? Number.MAX_SAFE_INTEGER))
         .slice(0, QUEUE_DISPLAY_LIMIT);
+      const failedRows = rowsWithState
+        .filter(item => item.state.status === 'failed' && !item.row.hasP2fk)
+        .sort((a, b) => (b.state.failedAt || 0) - (a.state.failedAt || 0));
       const confirmedRows = rowsWithState
         .filter(item => item.state.status === 'confirmed')
         .sort((a, b) => (b.state.confirmedAt || 0) - (a.state.confirmedAt || 0))
         .slice(0, CONFIRMED_DISPLAY_LIMIT);
-      const displayRows = [...queueRows, ...confirmedRows];
+      const displayRows = [...queueRows, ...failedRows, ...confirmedRows];
       if (!displayRows.length) {
-        body.innerHTML = '<tr><td colspan="6" class="muted">No queued items and no recent confirmations yet.</td></tr>';
+        body.innerHTML = '<tr><td colspan="6" class="muted">No queued, failed, or recent confirmations yet.</td></tr>';
         renderSummary();
         return;
       }
@@ -562,8 +569,7 @@
         if (state.status === 'syncing') statusPills.push('<span class="pill warn">Syncing</span>');
         if (state.status === 'broadcasted') statusPills.push('<span class="pill warn">Broadcasted</span>');
         if (state.status === 'confirmed') statusPills.push('<span class="pill good">Confirmed (recent)</span>');
-        if (state.status === 'too-large') statusPills.push('<span class="pill bad">Over 100 MB</span>');
-        if (state.status === 'error') statusPills.push(`<span class="pill bad">${esc(shortText(state.error || 'Error', 50))}</span>`);
+        if (state.status === 'failed') statusPills.push(`<span class="pill bad">Failed: ${esc(shortText(state.error || 'Unknown error', 44))}</span>`);
         const sizeText = row.sizeBytes ? fmtBytes(row.sizeBytes) : (state.sizeBytes ? fmtBytes(state.sizeBytes) : 'not checked');
         // Prefer artistAlias, otherwise ownerAlias. Don't fallback to hex address.
         let artistPreview = norm(openSea?.artistAlias || openSea?.ownerAlias);
@@ -1824,46 +1830,66 @@
       return bits.filter(Boolean).join('\n\n');
     }
 
+    async function runWithRetry(label, fn, attempts = RETRY_ATTEMPTS, pauseMs = RETRY_PAUSE_MS) {
+      let lastError;
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        try {
+          return await fn(attempt);
+        } catch (error) {
+          lastError = error;
+          if (attempt >= attempts) break;
+          appendLog(`${label} failed on attempt ${attempt}/${attempts}: ${error.message || 'Unknown error'}. Retrying in ${Math.round(pauseMs / 1000)}s…`, 'warn');
+          await sleep(pauseMs);
+        }
+      }
+      throw new Error(`${label} failed after ${attempts} attempts: ${lastError?.message || 'Unknown error'}`);
+    }
+
     async function uploadToIpfsIngress(sourceUrl, timeout = 300000) {
       const base = getApiBase().replace(/\/$/, '');
-      appendLog(`Fetching source content from ${shortText(sourceUrl, 80)}…`);
-      const ac1 = new AbortController();
-      const id1 = setTimeout(() => ac1.abort(), timeout);
-      let blob;
-      try {
-        const res = await fetch(sourceUrl, { cache: 'no-store', signal: ac1.signal });
-        if (!res.ok) throw new Error(`Source fetch failed: HTTP ${res.status}`);
-        blob = await res.blob();
-      } finally {
-        clearTimeout(id1);
+      const blob = await runWithRetry('Source fetch', async () => {
+        appendLog(`Fetching source content from ${shortText(sourceUrl, 80)}…`);
+        const ac1 = new AbortController();
+        const id1 = setTimeout(() => ac1.abort(), timeout);
+        try {
+          const res = await fetch(sourceUrl, { cache: 'no-store', signal: ac1.signal });
+          if (!res.ok) throw new Error(`Source fetch failed: HTTP ${res.status}`);
+          return await res.blob();
+        } finally {
+          clearTimeout(id1);
+        }
+      });
+      if (blob.size > MAX_IPFS_BYTES) {
+        throw new Error(`File is larger than 100 MB (${fmtBytes(blob.size)}).`);
       }
       const detectedMime = norm(blob.type).split(';')[0].trim();
       appendLog(`Uploading ${fmtBytes(blob.size)} to IPFS ingress…`);
-      const form = new FormData();
-      form.append('file', blob, 'upload.bin');
-      const ac2 = new AbortController();
-      const id2 = setTimeout(() => ac2.abort(), timeout);
-      let result;
-      try {
-        const res = await fetch(`${base}/api/v0/add`, {
-          method: 'POST',
-          body: form,
-          signal: ac2.signal,
-          cache: 'no-store',
-        });
-        if (!res.ok) {
-          let errBody = '';
-          try { errBody = await res.text(); } catch {}
-          throw new Error(`IPFS ingress upload failed: HTTP ${res.status}${errBody ? `: ${errBody.slice(0, 200)}` : ''}`);
+      const result = await runWithRetry('IPFS ingress upload', async () => {
+        const form = new FormData();
+        form.append('file', blob, 'upload.bin');
+        const ac2 = new AbortController();
+        const id2 = setTimeout(() => ac2.abort(), timeout);
+        try {
+          const res = await fetch(`${base}/api/v0/add`, {
+            method: 'POST',
+            body: form,
+            signal: ac2.signal,
+            cache: 'no-store',
+          });
+          if (!res.ok) {
+            let errBody = '';
+            try { errBody = await res.text(); } catch {}
+            throw new Error(`IPFS ingress upload failed: HTTP ${res.status}${errBody ? `: ${errBody.slice(0, 200)}` : ''}`);
+          }
+          return await res.json();
+        } finally {
+          clearTimeout(id2);
         }
-        result = await res.json();
-      } finally {
-        clearTimeout(id2);
-      }
+      });
       const rawCid = norm(result?.Hash || result?.hash || result?.cid || '');
       const cid = rawCid ? normalizeCid(rawCid) : '';
       if (!cid || !CID_RE.test(cid)) throw new Error(`IPFS ingress did not return a valid CID (got: ${rawCid || 'empty'})`);
-      return { cid, mime: detectedMime };
+      return { cid, mime: detectedMime, size: blob.size };
     }
 
     async function syncRow(rowKey) {
@@ -1875,10 +1901,10 @@
       }
       setSyncState(rowKey, { status: 'syncing', error: '' });
       try {
-        const size = await getArtifactSize(row);
+        let size = await getArtifactSize(row);
         if (size != null && size > MAX_IPFS_BYTES) {
           appendLog(`Skipping ${rowKey}: ${fmtBytes(size)} exceeds 100 MB.`, 'warn');
-          setSyncState(rowKey, { status: 'too-large', sizeBytes: size, error: 'File is larger than 100 MB.' });
+          setSyncState(rowKey, { status: 'failed', sizeBytes: size, error: 'File is larger than 100 MB.' });
           return;
         }
         const openSea = row.openSeaItems[0];
@@ -1889,8 +1915,12 @@
           const upload = await uploadToIpfsIngress(row.sourceUrl);
           etchCid = upload.cid;
           detectedMime = upload.mime;
+          if (size == null && upload.size != null) {
+            size = upload.size;
+            row.sizeBytes = size;
+          }
           appendLog(`Non-IPFS artifact uploaded → IPFS CID ${etchCid}.`, 'good');
-          setSyncState(rowKey, { uploadedCid: etchCid });
+          setSyncState(rowKey, { uploadedCid: etchCid, sizeBytes: size });
         } else {
           etchCid = row.cid;
         }
@@ -1921,14 +1951,14 @@
         }
       } catch (error) {
         appendLog(`Sync failed for ${rowKey}: ${error.message}`, 'bad');
-        setSyncState(rowKey, { status: 'error', error: error.message || 'Sync failed' });
+        setSyncState(rowKey, { status: 'failed', error: error.message || 'Sync failed' });
       }
     }
 
     function queueUnmatched() {
       const queue = (S.comparisonRows || [])
         .filter(row => row.hasOpenSea && !row.hasP2fk)
-        .filter(row => !['broadcasted', 'confirmed', 'too-large', 'syncing'].includes(getSyncState(row.rowKey).status))
+        .filter(row => !['broadcasted', 'confirmed', 'failed', 'syncing'].includes(getSyncState(row.rowKey).status))
         .map(row => row.rowKey);
       S.syncQueue = queue;
       queue.forEach((rowKey, idx) => setSyncState(rowKey, { status: 'queued', queueRank: idx }));
