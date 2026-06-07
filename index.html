@@ -401,7 +401,7 @@
     const DIFF_RECHECK_MS = 60 * 60 * 1000;
     const OPEN_SEA_KEY_RENEW_CHECK_MS = 60 * 60 * 1000;
     const DEFAULT_OPEN_SEA_KEY_EXPIRY_MS = 24 * 60 * 60 * 1000;
-    const RETRY_ATTEMPTS = 2;
+    const TOTAL_ATTEMPTS = 2;
     const RETRY_PAUSE_MS = 15000;
     const QUEUE_DISPLAY_LIMIT = 10;
     const CONFIRMED_DISPLAY_LIMIT = 5;
@@ -1830,7 +1830,7 @@
       return bits.filter(Boolean).join('\n\n');
     }
 
-    async function runWithRetry(label, fn, attempts = RETRY_ATTEMPTS, pauseMs = RETRY_PAUSE_MS) {
+    async function runWithRetry(label, fn, attempts = TOTAL_ATTEMPTS, pauseMs = RETRY_PAUSE_MS) {
       let lastError;
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
         try {
@@ -1915,10 +1915,7 @@
           const upload = await uploadToIpfsIngress(row.sourceUrl);
           etchCid = upload.cid;
           detectedMime = upload.mime;
-          if (size == null && upload.size != null) {
-            size = upload.size;
-            row.sizeBytes = size;
-          }
+          if (size == null && upload.size != null) size = upload.size;
           appendLog(`Non-IPFS artifact uploaded → IPFS CID ${etchCid}.`, 'good');
           setSyncState(rowKey, { uploadedCid: etchCid, sizeBytes: size });
         } else {
