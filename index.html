@@ -564,7 +564,9 @@
         if (state.status === 'too-large') statusPills.push('<span class="pill bad">Over 100 MB</span>');
         if (state.status === 'error') statusPills.push(`<span class="pill bad">${esc(shortText(state.error || 'Error', 50))}</span>`);
         const sizeText = row.sizeBytes ? fmtBytes(row.sizeBytes) : (state.sizeBytes ? fmtBytes(state.sizeBytes) : 'not checked');
-        const artistPreview = norm(openSea?.artistAlias || openSea?.creatorAddress);
+        // Prefer artistAlias, otherwise ownerAlias. Don't fallback to hex address.
+        let artistPreview = norm(openSea?.artistAlias || openSea?.ownerAlias);
+        if (ETH_ADDR_RE.test(artistPreview)) artistPreview = '';
         const cidDisplay = row.cid
           ? `<code>${esc(row.cid)}</code>${row.urn ? `<div class="mini">${esc(row.urn)}</div>` : ''}`
           : `<span class="pill warn">Non-IPFS</span>${row.sourceKey ? `<div class="mini"><code title="${esc(row.sourceUrl)}">${esc(shortText(row.sourceKey, 20))}</code></div>` : ''}${state.uploadedCid ? `<div class="mini">Uploaded: <code>${esc(state.uploadedCid)}</code></div>` : ''}`;
@@ -576,7 +578,7 @@
             <td>
               <div><strong>${esc(openSea?.name || '—')}</strong></div>
               <div class="mini">${esc(openSea?.sourceLabel || '—')}</div>
-              <div class="mini">Artist: ${esc(artistPreview ? (ETH_ADDR_RE.test(artistPreview) ? shortAddr(artistPreview) : artistPreview) : 'not provided by OpenSea')}</div>
+              <div class="mini">Artist: ${esc(artistPreview ? artistPreview : 'not provided by OpenSea')}</div>
               ${openSea?.tokenUrl ? `<div class="mini"><a href="${esc(openSea.tokenUrl)}" target="_blank" rel="noreferrer">OpenSea item</a></div>` : ''}
             </td>
             <td>
@@ -736,7 +738,9 @@
       }
     }
 
-    async function fetchOpenSea(path, params = {}) {
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    async function fetchOpenSea(path, params = {}, retries = 3, backoff = 1000) {
       const base = getOpenSeaApi().replace(/\/$/, '');
       const url = new URL(`${base}${path}`);
       Object.entries(params || {}).forEach(([k, v]) => {
@@ -745,16 +749,25 @@
       const headers = { Accept: 'application/json' };
       const apiKey = getOpenSeaApiKey();
       if (apiKey) headers['x-api-key'] = apiKey;
-      const res = await fetch(url.toString(), {
-        headers,
-        cache: 'no-store',
-      });
-      if (!res.ok) {
+
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        const res = await fetch(url.toString(), {
+          headers,
+          cache: 'no-store',
+        });
+        if (res.ok) {
+          return await res.json();
+        }
+        if (res.status === 429 && attempt < retries) {
+          console.warn(`OpenSea API HTTP 429 on attempt ${attempt + 1}. Retrying in ${backoff}ms...`);
+          await delay(backoff);
+          backoff *= 2; // Exponential backoff
+          continue;
+        }
         let body = '';
         try { body = await res.text(); } catch {}
         throw new Error(`OpenSea API HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`);
       }
-      return await res.json();
     }
 
     async function createOpenSeaInstantApiKey(options = {}) {
@@ -1367,41 +1380,49 @@
       if (!targets.length) return;
       appendLog(`Looking up richer OpenSea metadata for ${targets.length} item(s)…`);
       const collectionCache = new Map();
-      await Promise.allSettled(targets.map(async item => {
-        let detailToken = null;
-        try {
-          const payload = await fetchOpenSea(`/chain/ethereum/contract/${encodeURIComponent(item.contract)}/nfts/${encodeURIComponent(item.tokenId)}`);
-          detailToken = payload?.nft || payload?.token || payload || null;
-        } catch {}
+      const CHUNK_SIZE = 5;
+      for (let i = 0; i < targets.length; i += CHUNK_SIZE) {
+        const chunk = targets.slice(i, i + CHUNK_SIZE);
+        await Promise.allSettled(chunk.map(async item => {
+          let detailToken = null;
+          try {
+            const payload = await fetchOpenSea(`/chain/ethereum/contract/${encodeURIComponent(item.contract)}/nfts/${encodeURIComponent(item.tokenId)}`);
+            detailToken = payload?.nft || payload?.token || payload || null;
+          } catch {}
 
-        let collectionDetail = null;
-        // In OpenSea API v2, detailToken.collection is a plain slug string, not an object.
-        const rawTokenCollection = detailToken?.collection;
-        const collectionSlug = norm(
-          (typeof rawTokenCollection === 'string' ? rawTokenCollection : (rawTokenCollection?.slug || rawTokenCollection?.collection))
-          || item?.collectionSlug
-        );
-        if (collectionSlug) {
-          if (!collectionCache.has(collectionSlug)) {
-            collectionCache.set(collectionSlug, (async () => {
-              try {
-                const payload = await fetchOpenSea(`/collections/${encodeURIComponent(collectionSlug)}`);
-                // In OpenSea API v2 the response IS the collection object (payload.collection is the slug string, not the object).
-                return (payload && typeof payload === 'object' && !Array.isArray(payload)) ? payload : null;
-              } catch {
-                return null;
-              }
-            })());
+          let collectionDetail = null;
+          // In OpenSea API v2, detailToken.collection is a plain slug string, not an object.
+          const rawTokenCollection = detailToken?.collection;
+          const collectionSlug = norm(
+            (typeof rawTokenCollection === 'string' ? rawTokenCollection : (rawTokenCollection?.slug || rawTokenCollection?.collection))
+            || item?.collectionSlug
+          );
+          if (collectionSlug) {
+            if (!collectionCache.has(collectionSlug)) {
+              collectionCache.set(collectionSlug, (async () => {
+                try {
+                  const payload = await fetchOpenSea(`/collections/${encodeURIComponent(collectionSlug)}`);
+                  // In OpenSea API v2 the response IS the collection object (payload.collection is the slug string, not the object).
+                  return (payload && typeof payload === 'object' && !Array.isArray(payload)) ? payload : null;
+                } catch (err) {
+                  console.warn(`Failed to fetch collection detail for slug ${collectionSlug}`, err);
+                  return null;
+                }
+              })());
+            }
+            collectionDetail = await collectionCache.get(collectionSlug);
           }
-          collectionDetail = await collectionCache.get(collectionSlug);
-        }
 
-        const artistMeta = resolveOpenSeaArtistMeta(detailToken || {}, collectionDetail || null);
-        if (artistMeta.creatorAddress) item.creatorAddress = artistMeta.creatorAddress;
-        if (artistMeta.artistAlias) item.artistAlias = artistMeta.artistAlias;
-        const tokenUrl = norm(detailToken?.opensea_url || detailToken?.permalink || detailToken?.asset_url);
-        if (tokenUrl) item.tokenUrl = tokenUrl;
-      }));
+          const artistMeta = resolveOpenSeaArtistMeta(detailToken || {}, collectionDetail || null);
+          if (artistMeta.creatorAddress) item.creatorAddress = artistMeta.creatorAddress;
+          if (artistMeta.artistAlias && !ETH_ADDR_RE.test(artistMeta.artistAlias)) {
+            item.artistAlias = artistMeta.artistAlias;
+          }
+
+          const tokenUrl = norm(detailToken?.opensea_url || detailToken?.permalink || detailToken?.asset_url);
+          if (tokenUrl) item.tokenUrl = tokenUrl;
+        }));
+      }
     }
 
     async function loadOpenSeaItems(user) {
@@ -1411,27 +1432,31 @@
 
       await enrichOpenSeaArtistMetadata(all);
 
-      // Resolve unique creator addresses to OpenSea usernames in parallel.
+      // Resolve unique creator addresses to OpenSea usernames in chunks.
       const uniqueCreators = [...new Set(all.map(item => item.creatorAddress).filter(a => ETH_ADDR_RE.test(a)))];
       if (uniqueCreators.length) {
         const nameMap = new Map();
-        await Promise.allSettled(uniqueCreators.map(async addr => {
-          try {
-            const payload = await fetchOpenSea(`/accounts/${encodeURIComponent(addr)}`);
-            const account = payload?.account || payload || {};
-            // username / display_name from the account endpoint
-            let name = norm(account.username || account.display_name || account.name || '');
-            // Fallback: try the resolve endpoint which also returns an ENS name
-            if (!name) {
-              try {
-                const rp = await fetchOpenSea(`/accounts/resolve/${encodeURIComponent(addr)}`);
-                const ra = rp?.account || rp || {};
-                name = norm(ra.username || ra.ens_name || ra.display_name || ra.name || '');
-              } catch {}
-            }
-            if (name) nameMap.set(addr.toLowerCase(), name);
-          } catch {}
-        }));
+        const CHUNK_SIZE = 5;
+        for (let i = 0; i < uniqueCreators.length; i += CHUNK_SIZE) {
+          const chunk = uniqueCreators.slice(i, i + CHUNK_SIZE);
+          await Promise.allSettled(chunk.map(async addr => {
+            try {
+              const payload = await fetchOpenSea(`/accounts/${encodeURIComponent(addr)}`);
+              const account = payload?.account || payload || {};
+              // username / display_name from the account endpoint
+              let name = norm(account.username || account.display_name || account.name || '');
+              // Fallback: try the resolve endpoint which also returns an ENS name
+              if (!name) {
+                try {
+                  const rp = await fetchOpenSea(`/accounts/resolve/${encodeURIComponent(addr)}`);
+                  const ra = rp?.account || rp || {};
+                  name = norm(ra.username || ra.ens_name || ra.display_name || ra.name || '');
+                } catch {}
+              }
+              if (name) nameMap.set(addr.toLowerCase(), name);
+            } catch {}
+          }));
+        }
         for (const item of all) {
           if (!item.creatorAddress) continue;
           const resolvedName = nameMap.get(item.creatorAddress.toLowerCase());
