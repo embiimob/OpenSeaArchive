@@ -1291,6 +1291,8 @@
         batch.forEach(item => all.push({ source: 'owned', token: item }));
         next = norm(data?.next || '');
         if (!next) break;
+        // Small delay to prevent 429 when paginating through large collections
+        await delay(500);
       }
       return all;
     }
@@ -1378,7 +1380,6 @@
     async function enrichOpenSeaArtistMetadata(items) {
       const targets = items.filter(item => item?.contract && item?.tokenId && needsArtistMetadata(item));
       if (!targets.length) return;
-      appendLog(`Looking up richer OpenSea metadata for ${targets.length} item(s)…`);
       const collectionCache = new Map();
       const CHUNK_SIZE = 5;
       for (let i = 0; i < targets.length; i += CHUNK_SIZE) {
@@ -1422,30 +1423,24 @@
           const tokenUrl = norm(detailToken?.opensea_url || detailToken?.permalink || detailToken?.asset_url);
           if (tokenUrl) item.tokenUrl = tokenUrl;
         }));
+        await delay(1000); // Drastically slow down the rate of requests
       }
     }
 
-    async function loadOpenSeaItems(user) {
-      appendLog(`Resolving OpenSea items for ${user.address}…`);
-      const owned = await fetchOpenSeaOwned(user.address);
-      const all = owned.map(item => normalizeOpenSeaItem(item, user));
+    async function processEnrichmentChunk(chunk) {
+      await enrichOpenSeaArtistMetadata(chunk);
 
-      await enrichOpenSeaArtistMetadata(all);
-
-      // Resolve unique creator addresses to OpenSea usernames in chunks.
-      const uniqueCreators = [...new Set(all.map(item => item.creatorAddress).filter(a => ETH_ADDR_RE.test(a)))];
+      const uniqueCreators = [...new Set(chunk.map(item => item.creatorAddress).filter(a => ETH_ADDR_RE.test(a)))];
       if (uniqueCreators.length) {
         const nameMap = new Map();
         const CHUNK_SIZE = 5;
         for (let i = 0; i < uniqueCreators.length; i += CHUNK_SIZE) {
-          const chunk = uniqueCreators.slice(i, i + CHUNK_SIZE);
-          await Promise.allSettled(chunk.map(async addr => {
+          const uChunk = uniqueCreators.slice(i, i + CHUNK_SIZE);
+          await Promise.allSettled(uChunk.map(async addr => {
             try {
               const payload = await fetchOpenSea(`/accounts/${encodeURIComponent(addr)}`);
               const account = payload?.account || payload || {};
-              // username / display_name from the account endpoint
               let name = norm(account.username || account.display_name || account.name || '');
-              // Fallback: try the resolve endpoint which also returns an ENS name
               if (!name) {
                 try {
                   const rp = await fetchOpenSea(`/accounts/resolve/${encodeURIComponent(addr)}`);
@@ -1456,8 +1451,9 @@
               if (name) nameMap.set(addr.toLowerCase(), name);
             } catch {}
           }));
+          await delay(1000); // Drastically slow down the rate of requests
         }
-        for (const item of all) {
+        for (const item of chunk) {
           if (!item.creatorAddress) continue;
           const resolvedName = nameMap.get(item.creatorAddress.toLowerCase());
           if (resolvedName) item.artistAlias = resolvedName;
@@ -1465,22 +1461,59 @@
       }
 
       // For non-IPFS items, compute a SHA-256 source key from the source URL.
-      const needSrcKey = all.filter(item => !item.cid && item.sourceUrl);
+      const needSrcKey = chunk.filter(item => !item.cid && item.sourceUrl && !item.sourceKey);
       await Promise.allSettled(needSrcKey.map(async item => {
         try { item.sourceKey = await sha256hex(item.sourceUrl); } catch {}
       }));
+    }
 
+    async function startBackgroundEnrichment(items, initialCount, currentAnalysisId) {
+      const remaining = items.slice(initialCount);
+      const CHUNK_SIZE = 10;
+      for (let i = 0; i < remaining.length; i += CHUNK_SIZE) {
+        if (S.analysisId !== currentAnalysisId) break; // Stop if user started a new analysis
+        const chunk = remaining.slice(i, i + CHUNK_SIZE);
+        await processEnrichmentChunk(chunk);
+
+        if (S.analysisId === currentAnalysisId) {
+          // Re-render table and update status to reflect progress
+          buildComparisonRows();
+          const totalProcessed = initialCount + i + chunk.length;
+          setStatus('analysisStatus', `Analysis background enrichment: ${totalProcessed} / ${items.length} items processed...`, 'warn');
+        }
+      }
+      if (S.analysisId === currentAnalysisId) {
+        setStatus('analysisStatus', `Analysis and background enrichment complete. Found ${S.openSeaItems.length} OpenSea items; ${S.p2fkItems.length} p2fk refs.`, 'good');
+        appendLog('Background enrichment complete.', 'good');
+      }
+    }
+
+    async function loadOpenSeaItems(user) {
+      appendLog(`Resolving OpenSea items for ${user.address}…`);
+      const owned = await fetchOpenSeaOwned(user.address);
+      const all = owned.map(item => normalizeOpenSeaItem(item, user));
+
+      // Dedup immediately based on available info
       const deduped = [];
       const seen = new Set();
       for (const item of all) {
+        // Fallback to sourceUrl if sourceKey isn't generated yet
         const key = item.cid
           ? `${item.source}:${item.contract}:${item.tokenId}:${item.cid}`
-          : `src:${item.sourceKey || item.sourceUrl}`;
+          : `src:${item.sourceUrl}`;
         if (seen.has(key)) continue;
         seen.add(key);
         deduped.push(item);
       }
       appendLog(`Loaded ${deduped.length} OpenSea entries (${owned.length} owned).`, 'good');
+
+      // Process the first 10 immediately so the UI populates quickly
+      const initialChunk = deduped.slice(0, 10);
+      if (initialChunk.length) {
+        appendLog(`Enriching metadata for the first ${initialChunk.length} items…`);
+        await processEnrichmentChunk(initialChunk);
+      }
+
       return deduped;
     }
 
@@ -1693,12 +1726,15 @@
       appendLog(`Starting analysis for #${keyword} and ${rawUser}.`);
       try {
         S.keyword = keyword;
+        const currentAnalysisId = Date.now().toString();
+        S.analysisId = currentAnalysisId;
+
         const user = await resolveOpenSeaUser(rawUser);
         S.openSeaUser = user;
         appendLog(`Resolved OpenSea user to ${user.address}${user.alias ? ` (${user.alias})` : ''}.`, 'good');
         const [p2fkItems, openSeaItems] = await Promise.all([loadP2fkItems(keyword), loadOpenSeaItems(user)]);
         S.p2fkItems = p2fkItems;
-        S.openSeaItems = openSeaItems.filter(item => item.cid || item.sourceKey);
+        S.openSeaItems = openSeaItems.filter(item => item.cid || item.sourceKey || item.sourceUrl);
         // Populate processedSrcKeys from p2fk messages.
         S.processedSrcKeys.clear();
         const srcKeyRe = new RegExp(SRC_KEY_RE.source, 'gi');
@@ -1710,7 +1746,10 @@
         buildComparisonRows();
         const ipfsCount = S.openSeaItems.filter(i => i.cid).length;
         const nonIpfsCount = S.openSeaItems.filter(i => !i.cid).length;
-        setStatus('analysisStatus', `Analysis complete for #${keyword} and ${user.address}. Found ${ipfsCount} IPFS + ${nonIpfsCount} non-IPFS OpenSea items; ${S.p2fkItems.length} p2fk refs.`, 'good');
+        setStatus('analysisStatus', `Analysis complete for #${keyword} and ${user.address}. Found ${ipfsCount} IPFS + ${nonIpfsCount} non-IPFS OpenSea items; ${S.p2fkItems.length} p2fk refs. Background processing remaining items...`, 'good');
+
+        // Start background enrichment process
+        startBackgroundEnrichment(openSeaItems, 10, currentAnalysisId);
       } catch (error) {
         appendLog(`Analysis failed: ${error.message}`, 'bad');
         setStatus('analysisStatus', error.message || 'Analysis failed.', 'bad');
@@ -1881,9 +1920,12 @@
       S.diffQueryRunning = true;
       try {
         appendLog(`Running difference query for #${S.keyword} and ${S.openSeaUser.address} (OpenSea)…`);
+        const currentAnalysisId = Date.now().toString();
+        S.analysisId = currentAnalysisId;
+
         const [p2fkItems, openSeaItems] = await Promise.all([loadP2fkItems(S.keyword), loadOpenSeaItems(S.openSeaUser)]);
         S.p2fkItems = p2fkItems;
-        S.openSeaItems = openSeaItems.filter(item => item.cid || item.sourceKey);
+        S.openSeaItems = openSeaItems.filter(item => item.cid || item.sourceKey || item.sourceUrl);
         // Rebuild processedSrcKeys from fresh p2fk data.
         S.processedSrcKeys.clear();
         const srcKeyRe2 = new RegExp(SRC_KEY_RE.source, 'gi');
@@ -1893,6 +1935,10 @@
           while ((m = srcKeyRe2.exec(text)) !== null) S.processedSrcKeys.add(m[1].toLowerCase());
         });
         buildComparisonRows();
+
+        // Start background enrichment process
+        startBackgroundEnrichment(openSeaItems, 10, currentAnalysisId);
+
         const queued = queueUnmatched();
         S.nextDiffQueryAt = queued ? null : Date.now() + DIFF_RECHECK_MS;
         if (queued) appendLog(`Found ${queued} item(s) waiting to sync from fresh difference query.`, 'good');
