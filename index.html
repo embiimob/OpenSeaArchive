@@ -864,6 +864,11 @@
       return { clean, attachments, links, salts };
     }
 
+    function getSourceKeyScanText(item) {
+      const rawText = item?.rawRoot?.message;
+      return (typeof rawText === 'string' && rawText.length) ? rawText : (item?.message || '');
+    }
+
     function normalizeRoot(raw) {
       if (!raw || typeof raw !== 'object') return null;
       const rawMsg = raw.Message ?? raw['Message'] ?? '';
@@ -1740,9 +1745,8 @@
         S.processedSrcKeys.clear();
         const srcKeyRe = new RegExp(SRC_KEY_RE.source, 'gi');
         p2fkItems.forEach(item => {
-          // rawRoot is the full normalizeRoot payload; rawRoot.message keeps hidden <<...>> tokens while item.message is cleaned display text.
-          const rawText = item.rawRoot?.message;
-          const text = (typeof rawText === 'string' && rawText.length) ? rawText : (item.message || '');
+          // rawRoot.message keeps hidden <<...>> tokens while item.message is cleaned display text.
+          const text = getSourceKeyScanText(item);
           let m;
           while ((m = srcKeyRe.exec(text)) !== null) S.processedSrcKeys.add(m[1].toLowerCase());
         });
@@ -1945,9 +1949,8 @@
         S.processedSrcKeys.clear();
         const srcKeyRe2 = new RegExp(SRC_KEY_RE.source, 'gi');
         p2fkItems.forEach(item => {
-          // rawRoot is the full normalizeRoot payload; rawRoot.message keeps hidden <<...>> tokens while item.message is cleaned display text.
-          const rawText = item.rawRoot?.message;
-          const text = (typeof rawText === 'string' && rawText.length) ? rawText : (item.message || '');
+          // rawRoot.message keeps hidden <<...>> tokens while item.message is cleaned display text.
+          const text = getSourceKeyScanText(item);
           let m;
           while ((m = srcKeyRe2.exec(text)) !== null) S.processedSrcKeys.add(m[1].toLowerCase());
         });
