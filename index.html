@@ -364,7 +364,7 @@
     const CID_TEXT_RE = new RegExp(`\\\\b(${CID_ANY_SRC})\\\\b`, 'ig');
     const IPFS_PATH_RE = /^\/?ipfs\/([a-zA-Z0-9]+)(?:\/(.*))?$/i;
     const SRC_KEY_RE = /src-key:([0-9a-f]{64})/gi;
-    const wrapHiddenToken = value => `<<${value}>>`;
+    const wrapInHiddenMarkers = value => `<<${value}>>`;
     // Convert a CIDv1 (bafy…, dag-pb + sha2-256 only) to its CIDv0 (Qm…) equivalent.
     // Returns the CIDv0 string on success, or null if the CID cannot be converted.
     function cidV1ToV0(cid) {
@@ -864,6 +864,7 @@
       return { clean, attachments, links, salts };
     }
 
+    // Prefer rawRoot.message because it preserves hidden <<...>> markers; fallback to cleaned item.message when raw is absent/empty.
     function getSourceKeyScanText(item) {
       const rawText = item?.rawRoot?.message;
       return (typeof rawText === 'string' && rawText.length) ? rawText : (item?.message || '');
@@ -1818,7 +1819,7 @@
       bits.push(`#${S.keyword}`);
       getExtraKeywords().forEach(tag => bits.push(`#${tag}`));
       // Embed source URL hash in hidden token so future scans can detect this non-IPFS item was already archived.
-      if (!row.cid && row.sourceKey) bits.push(wrapHiddenToken(`src-key:${row.sourceKey}`));
+      if (!row.cid && row.sourceKey) bits.push(wrapInHiddenMarkers(`src-key:${row.sourceKey}`));
       return bits.filter(Boolean).join('\n\n');
     }
 
