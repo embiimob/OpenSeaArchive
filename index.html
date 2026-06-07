@@ -1739,7 +1739,7 @@
         S.processedSrcKeys.clear();
         const srcKeyRe = new RegExp(SRC_KEY_RE.source, 'gi');
         p2fkItems.forEach(item => {
-          const text = item.rawRoot?.message || item.message || '';
+          const text = item.rawRoot?.message ?? item.message ?? '';
           let m;
           while ((m = srcKeyRe.exec(text)) !== null) S.processedSrcKeys.add(m[1].toLowerCase());
         });
@@ -1942,7 +1942,7 @@
         S.processedSrcKeys.clear();
         const srcKeyRe2 = new RegExp(SRC_KEY_RE.source, 'gi');
         p2fkItems.forEach(item => {
-          const text = item.rawRoot?.message || item.message || '';
+          const text = item.rawRoot?.message ?? item.message ?? '';
           let m;
           while ((m = srcKeyRe2.exec(text)) !== null) S.processedSrcKeys.add(m[1].toLowerCase());
         });
