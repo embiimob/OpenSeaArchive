@@ -1860,7 +1860,7 @@
         }
       });
       if (blob.size > MAX_IPFS_BYTES) {
-        throw new Error(`File is larger than 100 MB (${fmtBytes(blob.size)}).`);
+        throw new Error(`File is larger than ${fmtBytes(MAX_IPFS_BYTES)} (${fmtBytes(blob.size)}).`);
       }
       const detectedMime = norm(blob.type).split(';')[0].trim();
       appendLog(`Uploading ${fmtBytes(blob.size)} to IPFS ingress…`);
@@ -1903,8 +1903,8 @@
       try {
         let size = await getArtifactSize(row);
         if (size != null && size > MAX_IPFS_BYTES) {
-          appendLog(`Skipping ${rowKey}: ${fmtBytes(size)} exceeds 100 MB.`, 'warn');
-          setSyncState(rowKey, { status: 'failed', sizeBytes: size, error: 'File is larger than 100 MB.' });
+          appendLog(`Skipping ${rowKey}: ${fmtBytes(size)} exceeds ${fmtBytes(MAX_IPFS_BYTES)}.`, 'warn');
+          setSyncState(rowKey, { status: 'failed', sizeBytes: size, error: `File is larger than ${fmtBytes(MAX_IPFS_BYTES)}.` });
           return;
         }
         const openSea = row.openSeaItems[0];
