@@ -864,7 +864,8 @@
       return { clean, attachments, links, salts };
     }
 
-    // Prefer rawRoot.message because it preserves hidden <<...>> markers; fallback to cleaned item.message when raw is absent/empty.
+    // Prefer rawRoot.message because it preserves hidden <<...>> markers; fallback to cleaned item.message when raw is absent/empty
+    // (fallback may not contain hidden markers, but still supports legacy/plain src-key text).
     function getSourceKeyScanText(item) {
       const rawText = item?.rawRoot?.message;
       return (typeof rawText === 'string' && rawText.length) ? rawText : (item?.message || '');
