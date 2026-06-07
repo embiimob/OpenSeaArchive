@@ -1873,7 +1873,8 @@
           return;
         }
         const openSea = row.openSeaItems[0];
-        let etchCid, detectedMime = '';
+        let etchCid;
+        let detectedMime = '';
         if (!row.cid && row.sourceUrl) {
           // Non-IPFS item: upload the source content to p2fk.io IPFS ingress first.
           const upload = await uploadToIpfsIngress(row.sourceUrl);
@@ -1886,10 +1887,11 @@
         }
         // Extract the original artifact filename from the source URL to use as the path label.
         let sourceFilename = '';
-        try {
-          const u = new URL(row.sourceUrl || '');
-          sourceFilename = u.pathname.split('/').filter(Boolean).pop() || '';
-        } catch {}
+        if (row.sourceUrl) {
+          try {
+            sourceFilename = new URL(row.sourceUrl).pathname.split('/').filter(Boolean).pop() || '';
+          } catch {}
+        }
         const etchMime = detectedMime || openSea?.mime || '';
         const attach = await normalizeAttach(sourceFilename ? `IPFS:${etchCid}/${sourceFilename}` : `IPFS:${etchCid}`, { mime: etchMime });
         const outputs = await buildMsgOutputs({
