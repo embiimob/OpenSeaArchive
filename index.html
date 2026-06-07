@@ -660,9 +660,9 @@
       const segments = clean ? clean.split('/').filter(Boolean) : [];
       const tail = segments[segments.length - 1] || '';
       if (/\.[a-z0-9]{1,16}$/i.test(tail)) return clean;
-      const fallback = `artifact.${extFromMime(mime) || 'bin'}`;
-      if (!clean) return fallback;
-      return `${clean}/${fallback}`;
+      const ext = extFromMime(mime) || 'bin';
+      if (!clean) return `artifact.${ext}`;
+      return `${clean}.${ext}`;
     }
 
     function extractIpfsParts(v) {
@@ -1828,6 +1828,7 @@
       } finally {
         clearTimeout(id1);
       }
+      const detectedMime = norm(blob.type).split(';')[0].trim();
       appendLog(`Uploading ${fmtBytes(blob.size)} to IPFS ingress…`);
       const form = new FormData();
       form.append('file', blob, 'upload.bin');
@@ -1853,7 +1854,7 @@
       const rawCid = norm(result?.Hash || result?.hash || result?.cid || '');
       const cid = rawCid ? normalizeCid(rawCid) : '';
       if (!cid || !CID_RE.test(cid)) throw new Error(`IPFS ingress did not return a valid CID (got: ${rawCid || 'empty'})`);
-      return cid;
+      return { cid, mime: detectedMime };
     }
 
     async function syncRow(rowKey) {
@@ -1873,15 +1874,26 @@
         }
         const openSea = row.openSeaItems[0];
         let etchCid;
+        let detectedMime = '';
         if (!row.cid && row.sourceUrl) {
           // Non-IPFS item: upload the source content to p2fk.io IPFS ingress first.
-          etchCid = await uploadToIpfsIngress(row.sourceUrl);
+          const upload = await uploadToIpfsIngress(row.sourceUrl);
+          etchCid = upload.cid;
+          detectedMime = upload.mime;
           appendLog(`Non-IPFS artifact uploaded → IPFS CID ${etchCid}.`, 'good');
           setSyncState(rowKey, { uploadedCid: etchCid });
         } else {
           etchCid = row.cid;
         }
-        const attach = await normalizeAttach(`IPFS:${etchCid}`, { mime: openSea?.mime || '' });
+        // Extract the original artifact filename from the source URL to use as the path label.
+        let sourceFilename = '';
+        if (row.sourceUrl) {
+          try {
+            sourceFilename = new URL(row.sourceUrl).pathname.split('/').filter(Boolean).pop() || '';
+          } catch {}
+        }
+        const etchMime = detectedMime || openSea?.mime || '';
+        const attach = await normalizeAttach(sourceFilename ? `IPFS:${etchCid}/${sourceFilename}` : `IPFS:${etchCid}`, { mime: etchMime });
         const outputs = await buildMsgOutputs({
           text: buildSyncText(row),
           attachments: [attach.canonical],
