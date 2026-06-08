@@ -492,11 +492,16 @@
       return unique(norm($('extraKeywordsInput').value).split(/[,\s]+/).map(t => t.replace(/^#+/, '')).filter(Boolean));
     }
 
+    function getPendingSyncTotal(rows = S.comparisonRows || []) {
+      return rows.filter(row => row.hasOpenSea && !row.hasP2fk).length;
+    }
+
     function renderSummary() {
       const rows = S.comparisonRows || [];
       const totals = {
         openSea: S.openSeaItems.length,
         p2fk: S.p2fkItems.length,
+        pending: getPendingSyncTotal(rows),
         queued: 0,
         failed: 0,
         syncing: 0,
@@ -515,7 +520,7 @@
         ['Keyword address', S.keywordAddress || '—'],
         ['OpenSea refs', totals.openSea],
         ['p2fk refs', totals.p2fk],
-        [`Queue waiting (top ${QUEUE_DISPLAY_LIMIT} shown)`, totals.queued],
+        ['Queue waiting (analyzed total)', totals.pending],
         ['Failed (stays visible)', totals.failed],
         [`Recently confirmed (last ${CONFIRMED_DISPLAY_LIMIT} shown)`, totals.confirmed],
         ['Currently syncing', totals.syncing],
@@ -1495,13 +1500,13 @@
           buildComparisonRows();
           const queueInfo = queueUnmatched(MIN_SYNC_QUEUE_TARGET);
           const totalProcessed = initialCount + i + chunk.length;
-          setStatus('analysisStatus', `Analysis background enrichment: ${totalProcessed} / ${items.length} items processed. Queue: ${queueInfo.queued} item(s).`, 'warn');
+          setStatus('analysisStatus', `Analysis background enrichment: ${totalProcessed} / ${items.length} items processed. Queue waiting total: ${queueInfo.pendingTotal} item(s).`, 'warn');
           if (S.syncRunning && S.syncQueue.length && !S.syncBusy) processAutoSync();
         }
       }
       if (S.analysisId === currentAnalysisId) {
         const queueInfo = queueUnmatched(MIN_SYNC_QUEUE_TARGET);
-        setStatus('analysisStatus', `Analysis and background enrichment complete. Found ${S.openSeaItems.length} OpenSea items; ${S.p2fkItems.length} p2fk refs. Queue prepared: ${queueInfo.queued} item(s).`, 'good');
+        setStatus('analysisStatus', `Analysis and background enrichment complete. Found ${S.openSeaItems.length} OpenSea items; ${S.p2fkItems.length} p2fk refs. Queue waiting total: ${queueInfo.pendingTotal} item(s).`, 'good');
         appendLog('Background enrichment complete.', 'good');
       }
     }
@@ -1766,7 +1771,7 @@
         const queueInfo = queueUnmatched(MIN_SYNC_QUEUE_TARGET);
         const ipfsCount = S.openSeaItems.filter(i => i.cid).length;
         const nonIpfsCount = S.openSeaItems.filter(i => !i.cid).length;
-        setStatus('analysisStatus', `Analysis complete for #${keyword} and ${user.address}. Found ${ipfsCount} IPFS + ${nonIpfsCount} non-IPFS OpenSea items; ${S.p2fkItems.length} p2fk refs. Queue prepared: ${queueInfo.queued} item(s). Background processing remaining items...`, 'good');
+        setStatus('analysisStatus', `Analysis complete for #${keyword} and ${user.address}. Found ${ipfsCount} IPFS + ${nonIpfsCount} non-IPFS OpenSea items; ${S.p2fkItems.length} p2fk refs. Queue waiting total: ${queueInfo.pendingTotal} item(s). Background processing remaining items...`, 'good');
 
         // Start background enrichment process
         startBackgroundEnrichment(openSeaItems, 10, currentAnalysisId);
@@ -1984,7 +1989,7 @@
       const additions = candidates.slice(0, needed);
       S.syncQueue = [...activeQueue, ...additions];
       S.syncQueue.forEach((rowKey, idx) => setSyncState(rowKey, { status: 'queued', queueRank: idx }));
-      return { queued: S.syncQueue.length, added: additions.length };
+      return { queued: S.syncQueue.length, added: additions.length, pendingTotal: getPendingSyncTotal(rows) };
     }
 
     async function runDifferenceQuery() {
@@ -2015,7 +2020,7 @@
 
         const queueInfo = queueUnmatched(MIN_SYNC_QUEUE_TARGET);
         S.nextDiffQueryAt = queueInfo.queued ? null : Date.now() + DIFF_RECHECK_MS;
-        if (queueInfo.queued) appendLog(`Queue refreshed from difference query: ${queueInfo.queued} item(s) waiting to sync (${queueInfo.added} newly queued).`, 'good');
+        if (queueInfo.pendingTotal) appendLog(`Queue refreshed from difference query: ${queueInfo.pendingTotal} total waiting to sync (${queueInfo.queued} currently queued, ${queueInfo.added} newly queued).`, 'good');
         else appendLog('No new OpenSea differences found. Next difference query in 1 hour.', 'warn');
         return queueInfo.queued;
       } finally {
@@ -2084,8 +2089,8 @@
       S.syncRunning = true;
       S.nextDiffQueryAt = null;
       S.syncTimer = setInterval(processAutoSync, AUTO_SYNC_TICK_MS);
-      appendLog(`Auto sync started with ${queueInfo.queued} queued unmatched item(s). It syncs one-by-one after confirmations and keeps the queue topped up from analyzed differences.`, 'good');
-      setStatus('analysisStatus', `Auto sync started with ${queueInfo.queued} queued unmatched item(s).`, 'good');
+      appendLog(`Auto sync started with ${queueInfo.pendingTotal} total waiting item(s) from analysis (${queueInfo.queued} currently queued). It syncs one-by-one after confirmations and keeps the queue topped up from analyzed differences.`, 'good');
+      setStatus('analysisStatus', `Auto sync started. Queue waiting total: ${queueInfo.pendingTotal} item(s).`, 'good');
       processAutoSync();
     }
 
