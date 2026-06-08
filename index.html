@@ -1496,7 +1496,7 @@
           const queueInfo = queueUnmatched(MIN_SYNC_QUEUE_TARGET);
           const totalProcessed = initialCount + i + chunk.length;
           setStatus('analysisStatus', `Analysis background enrichment: ${totalProcessed} / ${items.length} items processed. Queue: ${queueInfo.queued} item(s).`, 'warn');
-          if (S.syncRunning && S.syncQueue.length) processAutoSync();
+          if (S.syncRunning && S.syncQueue.length && !S.syncBusy) processAutoSync();
         }
       }
       if (S.analysisId === currentAnalysisId) {
@@ -1978,7 +1978,8 @@
         .filter(row => !['broadcasted', 'confirmed', 'failed', 'syncing'].includes(getSyncState(row.rowKey).status))
         .map(row => row.rowKey)
         .filter(rowKey => !queuedSet.has(rowKey));
-      const targetCount = Number.isFinite(target) ? Math.max(0, Number(target)) : null;
+      const numericTarget = Number.isFinite(target) ? Number(target) : null;
+      const targetCount = numericTarget != null && numericTarget > 0 ? Math.max(0, numericTarget) : null;
       const needed = targetCount == null ? candidates.length : Math.max(0, targetCount - activeQueue.length);
       const additions = candidates.slice(0, needed);
       S.syncQueue = [...activeQueue, ...additions];
