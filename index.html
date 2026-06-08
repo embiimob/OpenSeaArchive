@@ -1442,6 +1442,15 @@
 
           const tokenUrl = norm(detailToken?.opensea_url || detailToken?.permalink || detailToken?.asset_url);
           if (tokenUrl) item.tokenUrl = tokenUrl;
+          if (detailToken && typeof detailToken === 'object') {
+            const media = normalizeOpenSeaMedia(detailToken, item);
+            if (media.sourceUrl) item.sourceUrl = media.sourceUrl;
+            if (media.artifactUri) item.artifactUri = media.artifactUri;
+            if (media.displayUri) item.displayUri = media.displayUri;
+            if (media.thumbnailUri) item.thumbnailUri = media.thumbnailUri;
+            if (media.metadataUri) item.metadataUri = media.metadataUri;
+            if (media.mime) item.mime = media.mime;
+          }
         }));
         await delay(1000); // Drastically slow down the rate of requests
       }
@@ -1540,36 +1549,51 @@
       return deduped;
     }
 
-    function normalizeOpenSeaItem(entry, user) {
-      const token = entry?.token || {};
-      const contract = norm(token?.contract || token?.contract_address || token?.contractAddress || token?.asset_contract?.address);
-      const tokenId = String(token?.identifier ?? token?.token_id ?? token?.tokenId ?? '');
-      const artifactCandidates = [
-        token?.image_url,
-        token?.image_original_url,
-        token?.animation_url,
-        token?.metadata_url,
-        token?.token_uri,
-        token?.display_image_url,
-      ].filter(Boolean);
-      // Always treat OpenSea items as source-upload candidates, even when URLs already contain IPFS CIDs,
-      // so sync uses a fresh upload path instead of trusting potentially incorrect discovered links.
-      const cid = ''; // intentionally blank to force upload-first sync behavior
-      const urn = ''; // intentionally blank to avoid treating discovered URNs as authoritative
-      // Pick the best source URL. Prefer animation_url (video/audio) then image URLs, then metadata/token URI.
+    function normalizeOpenSeaMedia(token = {}, fallback = {}) {
+      const metadataUri = norm(token?.metadata_url || token?.token_uri || fallback?.metadataUri || '');
       const sourceCandidates = [
+        token?.animation_original_url,
         token?.animation_url,
         token?.image_original_url,
         token?.image_url,
         token?.display_image_url,
-        token?.metadata_url,
-        token?.token_uri,
+        metadataUri,
+        fallback?.sourceUrl,
       ].filter(Boolean);
       const sourceUrl = sourceCandidates.map(v => {
         const input = norm(v);
         const info = extractIpfsParts(input);
         return info?.cid ? buildIpfsUrl(info.cid, info.path || '') : input;
       }).find(Boolean) || '';
+      const artifactUri = norm(
+        token?.animation_original_url
+        || token?.animation_url
+        || token?.image_original_url
+        || token?.image_url
+        || token?.display_image_url
+        || metadataUri
+        || fallback?.artifactUri
+        || ''
+      );
+      return {
+        sourceUrl,
+        artifactUri,
+        displayUri: norm(token?.display_image_url || token?.image_url || fallback?.displayUri || ''),
+        thumbnailUri: norm(token?.image_thumbnail_url || token?.image_preview_url || token?.image_url || fallback?.thumbnailUri || ''),
+        metadataUri,
+        mime: norm(token?.mime_type || token?.content_type || fallback?.mime || ''),
+      };
+    }
+
+    function normalizeOpenSeaItem(entry, user) {
+      const token = entry?.token || {};
+      const contract = norm(token?.contract || token?.contract_address || token?.contractAddress || token?.asset_contract?.address);
+      const tokenId = String(token?.identifier ?? token?.token_id ?? token?.tokenId ?? '');
+      const media = normalizeOpenSeaMedia(token);
+      // Always treat OpenSea items as source-upload candidates, even when URLs already contain IPFS CIDs,
+      // so sync uses a fresh upload path instead of trusting potentially incorrect discovered links.
+      const cid = ''; // intentionally blank to force upload-first sync behavior
+      const urn = ''; // intentionally blank to avoid treating discovered URNs as authoritative
       // In OpenSea API v2, token.collection is a plain slug string; in older responses it was an object.
       const collection = (token?.collection && typeof token.collection === 'object') ? token.collection : {};
       const collectionSlug = norm(
@@ -1590,15 +1614,15 @@
         tokenId,
         name: norm(token?.name) || '(untitled)',
         description: norm(token?.description),
-        artifactUri: norm(artifactCandidates[0] || ''),
-        displayUri: norm(token?.display_image_url || token?.image_url || ''),
-        thumbnailUri: norm(token?.image_thumbnail_url || token?.image_preview_url || token?.image_url || ''),
-        metadataUri: norm(token?.metadata_url || token?.token_uri || ''),
-        mime: norm(token?.mime_type || token?.content_type || ''),
+        artifactUri: media.artifactUri,
+        displayUri: media.displayUri,
+        thumbnailUri: media.thumbnailUri,
+        metadataUri: media.metadataUri,
+        mime: media.mime,
         cid,
         urn,
         path: '',
-        sourceUrl,
+        sourceUrl: media.sourceUrl,
         sourceKey: '', // filled asynchronously in loadOpenSeaItems() via the needSrcKey block
         collectionSlug,
         tokenUrl: openseaUrl || (contract && tokenId ? `https://opensea.io/assets/ethereum/${contract}/${tokenId}` : ''),
