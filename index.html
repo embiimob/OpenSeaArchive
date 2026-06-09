@@ -1549,9 +1549,23 @@
       return deduped;
     }
 
+    function cleanUrl(urlStr) {
+      if (!urlStr) return '';
+      try {
+        const u = new URL(urlStr);
+        u.searchParams.delete('w');
+        u.searchParams.delete('h');
+        return u.toString();
+      } catch (e) {
+        return urlStr;
+      }
+    }
+
     function normalizeOpenSeaMedia(token = {}, fallback = {}) {
       const metadataUri = norm(token?.metadata_url || token?.token_uri || fallback?.metadataUri || '');
       const sourceCandidates = [
+        token?.original_animation_url,
+        token?.original_image_url,
         token?.animation_original_url,
         token?.animation_url,
         token?.image_original_url,
@@ -1563,10 +1577,12 @@
       const sourceUrl = sourceCandidates.map(v => {
         const input = norm(v);
         const info = extractIpfsParts(input);
-        return info?.cid ? buildIpfsUrl(info.cid, info.path || '') : input;
+        return cleanUrl(info?.cid ? buildIpfsUrl(info.cid, info.path || '') : input);
       }).find(Boolean) || '';
-      const artifactUri = norm(
-        token?.animation_original_url
+      const artifactUri = cleanUrl(norm(
+        token?.original_animation_url
+        || token?.original_image_url
+        || token?.animation_original_url
         || token?.animation_url
         || token?.image_original_url
         || token?.image_url
@@ -1574,12 +1590,12 @@
         || metadataUri
         || fallback?.artifactUri
         || ''
-      );
+      ));
       return {
         sourceUrl,
         artifactUri,
-        displayUri: norm(token?.display_image_url || token?.image_url || fallback?.displayUri || ''),
-        thumbnailUri: norm(token?.image_thumbnail_url || token?.image_preview_url || token?.image_url || fallback?.thumbnailUri || ''),
+        displayUri: cleanUrl(norm(token?.display_image_url || token?.image_url || fallback?.displayUri || '')),
+        thumbnailUri: cleanUrl(norm(token?.image_thumbnail_url || token?.image_preview_url || token?.image_url || fallback?.thumbnailUri || '')),
         metadataUri,
         mime: norm(token?.mime_type || token?.content_type || fallback?.mime || ''),
       };
@@ -1602,6 +1618,8 @@
         || collection?.collection
       );
       const openseaUrl = norm(token?.opensea_url || token?.permalink || token?.asset_url);
+      const totalUnits = token?.total_supply ?? (Array.isArray(token?.owners) ? token.owners.reduce((sum, o) => sum + (Number(o?.quantity) || 0), 0) : null);
+      const mintedDate = norm(token?.created_at || token?.updated_at);
       const artistMeta = resolveOpenSeaArtistMeta(token);
       return {
         source: entry.source,
@@ -1626,6 +1644,8 @@
         sourceKey: '', // filled asynchronously in loadOpenSeaItems() via the needSrcKey block
         collectionSlug,
         tokenUrl: openseaUrl || (contract && tokenId ? `https://opensea.io/assets/ethereum/${contract}/${tokenId}` : ''),
+        totalUnits: totalUnits,
+        mintedDate: mintedDate,
       };
     }
 
@@ -1863,6 +1883,8 @@
       if (artistAlias) bits.push(`Artist: ${artistAlias}`);
       if (openSea?.name) bits.push(openSea.name);
       if (openSea?.description) bits.push(openSea.description);
+      if (openSea?.totalUnits !== null && openSea?.totalUnits !== undefined) bits.push(`Total units: ${openSea.totalUnits}`);
+      if (openSea?.mintedDate) bits.push(`Minted date: ${openSea.mintedDate}`);
       if (openSea?.tokenUrl) bits.push(`View on OpenSea: ${openSea.tokenUrl}`);
       bits.push(`#${S.keyword}`);
       getExtraKeywords().forEach(tag => bits.push(`#${tag}`));
