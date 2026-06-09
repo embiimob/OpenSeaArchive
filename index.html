@@ -1398,7 +1398,8 @@
     }
 
     async function enrichOpenSeaArtistMetadata(items) {
-      const targets = items.filter(item => item?.contract && item?.tokenId && needsArtistMetadata(item));
+      // Always enrich to fetch the true mint date from the events API, even if artist alias looks OK.
+      const targets = items.filter(item => item?.contract && item?.tokenId);
       if (!targets.length) return;
       const collectionCache = new Map();
       const CHUNK_SIZE = 5;
@@ -1409,6 +1410,16 @@
           try {
             const payload = await fetchOpenSea(`/chain/ethereum/contract/${encodeURIComponent(item.contract)}/nfts/${encodeURIComponent(item.tokenId)}`);
             detailToken = payload?.nft || payload?.token || payload || null;
+          } catch {}
+
+          let mintTimestamp = null;
+          try {
+            const eventsPayload = await fetchOpenSea(`/events/chain/ethereum/contract/${encodeURIComponent(item.contract)}/nfts/${encodeURIComponent(item.tokenId)}`, { event_type: 'transfer' });
+            const events = eventsPayload?.asset_events || [];
+            const mintEvent = events.find(e => e.transfer_type === 'mint' || e.from_address === '0x0000000000000000000000000000000000000000');
+            if (mintEvent && mintEvent.event_timestamp) {
+              mintTimestamp = mintEvent.event_timestamp;
+            }
           } catch {}
 
           let collectionDetail = null;
@@ -1450,6 +1461,10 @@
             if (media.thumbnailUri) item.thumbnailUri = media.thumbnailUri;
             if (media.metadataUri) item.metadataUri = media.metadataUri;
             if (media.mime) item.mime = media.mime;
+          }
+
+          if (mintTimestamp) {
+             item.mintedDate = new Date(mintTimestamp * 1000).toISOString();
           }
         }));
         await delay(1000); // Drastically slow down the rate of requests
