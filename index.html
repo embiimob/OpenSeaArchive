@@ -363,7 +363,7 @@
     const CID_LOOSE_RE = new RegExp(`(${CID_ANY_SRC})(?:[\\\\/]+([^<>\\\\s]+))?`, 'i');
     const CID_TEXT_RE = new RegExp(`\\\\b(${CID_ANY_SRC})\\\\b`, 'ig');
     const IPFS_PATH_RE = /^\/?ipfs\/([a-zA-Z0-9]+)(?:\/(.*))?$/i;
-    const SRC_KEY_RE = /src-key:([0-9a-f]{64})/gi;
+    const OPENSEA_URL_RE = /https?:\/\/(?:www\.)?opensea\.io\/[^\s<>"]+/gi;
     const wrapInHiddenMarkers = value => `<<${value}>>`;
     // Convert a CIDv1 (bafy…, dag-pb + sha2-256 only) to its CIDv0 (Qm…) equivalent.
     // Returns the CIDv0 string on success, or null if the CID cannot be converted.
@@ -430,7 +430,7 @@
       diffQueryRunning: false,
       sizeCache: new Map(),
       syncStateByCid: new Map(),
-      processedSrcKeys: new Set(),
+      processedTokenUrls: new Set(),
       feeRateCache: null,
       feeRateCachedAt: 0,
       openSeaKeyAutoRenew: false,
@@ -582,7 +582,7 @@
         if (ETH_ADDR_RE.test(artistPreview)) artistPreview = '';
         const cidDisplay = row.cid
           ? `<code>${esc(row.cid)}</code>${row.urn ? `<div class="mini">${esc(row.urn)}</div>` : ''}`
-          : `<span class="pill warn">Non-IPFS</span>${row.sourceKey ? `<div class="mini"><code title="${esc(row.sourceUrl)}">${esc(shortText(row.sourceKey, 20))}</code></div>` : ''}${state.uploadedCid ? `<div class="mini">Uploaded: <code>${esc(state.uploadedCid)}</code></div>` : ''}`;
+          : `<span class="pill warn">Non-IPFS</span>${row.tokenUrl ? `<div class="mini"><code title="${esc(row.sourceUrl)}">${esc(shortText(row.tokenUrl, 30))}</code></div>` : ''}${state.uploadedCid ? `<div class="mini">Uploaded: <code>${esc(state.uploadedCid)}</code></div>` : ''}`;
         return `
           <tr>
             <td>
@@ -1504,11 +1504,6 @@
         }
       }
 
-      // For non-IPFS items, compute a SHA-256 source key from the source URL.
-      const needSrcKey = chunk.filter(item => !item.cid && item.sourceUrl && !item.sourceKey);
-      await Promise.allSettled(needSrcKey.map(async item => {
-        try { item.sourceKey = await sha256hex(item.sourceUrl); } catch {}
-      }));
     }
 
     async function startBackgroundEnrichment(items, initialCount, currentAnalysisId) {
@@ -1544,10 +1539,10 @@
       const deduped = [];
       const seen = new Set();
       for (const item of all) {
-        // Fallback to sourceUrl if sourceKey isn't generated yet
+        // Fallback to sourceUrl if tokenUrl is not available
         const key = item.cid
           ? `${item.source}:${item.contract}:${item.tokenId}:${item.cid}`
-          : `src:${item.sourceUrl}`;
+          : `src:${item.tokenUrl || item.sourceUrl}`;
         if (seen.has(key)) continue;
         seen.add(key);
         deduped.push(item);
@@ -1634,7 +1629,7 @@
       );
       const openseaUrl = norm(token?.opensea_url || token?.permalink || token?.asset_url);
       const totalUnits = token?.total_supply ?? (Array.isArray(token?.owners) ? token.owners.reduce((sum, o) => sum + (Number(o?.quantity) || 0), 0) : null);
-      const mintedDate = norm(collection?.created_date || token?.created_at || token?.updated_at);
+      const mintedDate = norm(token?.created_at);
       const artistMeta = resolveOpenSeaArtistMeta(token);
       return {
         source: entry.source,
@@ -1656,7 +1651,6 @@
         urn,
         path: '',
         sourceUrl: media.sourceUrl,
-        sourceKey: '', // filled asynchronously in loadOpenSeaItems() via the needSrcKey block
         collectionSlug,
         tokenUrl: openseaUrl || (contract && tokenId ? `https://opensea.io/assets/ethereum/${contract}/${tokenId}` : ''),
         totalUnits: totalUnits,
@@ -1722,7 +1716,7 @@
     function buildComparisonRows() {
       const map = new Map();
       const ensure = rowKey => {
-        if (!map.has(rowKey)) map.set(rowKey, { rowKey, cid: '', urn: '', sourceUrl: '', sourceKey: '', p2fkItems: [], openSeaItems: [], hasP2fk: false, hasOpenSea: false, sizeBytes: null, syncState: getSyncState(rowKey) });
+        if (!map.has(rowKey)) map.set(rowKey, { rowKey, cid: '', urn: '', sourceUrl: '', tokenUrl: '', p2fkItems: [], openSeaItems: [], hasP2fk: false, hasOpenSea: false, sizeBytes: null, syncState: getSyncState(rowKey) });
         return map.get(rowKey);
       };
       S.p2fkItems.filter(item => item.cid).forEach(item => {
@@ -1739,15 +1733,15 @@
         row.openSeaItems.push(item);
         row.hasOpenSea = true;
       });
-      // Non-IPFS OpenSea items keyed by src:${sourceKey}
-      S.openSeaItems.filter(item => !item.cid && item.sourceKey).forEach(item => {
-        const rowKey = `src:${item.sourceKey}`;
+      // Non-IPFS OpenSea items keyed by tokenUrl
+      S.openSeaItems.filter(item => !item.cid && item.tokenUrl).forEach(item => {
+        const rowKey = `src:${item.tokenUrl}`;
         const row = ensure(rowKey);
-        row.sourceKey ||= item.sourceKey;
+        row.tokenUrl ||= item.tokenUrl;
         row.sourceUrl ||= item.sourceUrl;
         row.openSeaItems.push(item);
         row.hasOpenSea = true;
-        row.hasP2fk = S.processedSrcKeys.has(item.sourceKey);
+        row.hasP2fk = S.processedTokenUrls.has(item.tokenUrl.toLowerCase());
       });
       const rows = [...map.values()].sort((a, b) => {
         const aRank = a.hasOpenSea && !a.hasP2fk ? 0 : a.hasOpenSea && a.hasP2fk ? 1 : 2;
@@ -1816,15 +1810,14 @@
         appendLog(`Resolved OpenSea user to ${user.address}${user.alias ? ` (${user.alias})` : ''}.`, 'good');
         const [p2fkItems, openSeaItems] = await Promise.all([loadP2fkItems(keyword), loadOpenSeaItems(user)]);
         S.p2fkItems = p2fkItems;
-        S.openSeaItems = openSeaItems.filter(item => item.cid || item.sourceKey || item.sourceUrl);
-        // Populate processedSrcKeys from p2fk messages.
-        S.processedSrcKeys.clear();
-        const srcKeyRe = new RegExp(SRC_KEY_RE.source, 'gi');
+        S.openSeaItems = openSeaItems.filter(item => item.cid || item.tokenUrl || item.sourceUrl);
+        // Populate processedTokenUrls from p2fk messages.
+        S.processedTokenUrls.clear();
         p2fkItems.forEach(item => {
           // rawRoot.message keeps hidden <<...>> tokens while item.message is cleaned display text.
           const text = getSourceKeyScanText(item);
           let m;
-          while ((m = srcKeyRe.exec(text)) !== null) S.processedSrcKeys.add(m[1].toLowerCase());
+          while ((m = OPENSEA_URL_RE.exec(text)) !== null) S.processedTokenUrls.add(m[0].toLowerCase());
         });
         buildComparisonRows();
         const queueInfo = queueUnmatched(MIN_SYNC_QUEUE_TARGET);
@@ -1884,8 +1877,8 @@
 
     function buildSyncHiddenRefs(row) {
       const refs = [];
-      // Embed source URL hash in a hidden token so future scans can detect this non-IPFS item was already archived.
-      if (!row.cid && row.sourceKey) refs.push(`src-key:${row.sourceKey}`);
+      const openSea = row.openSeaItems?.[0];
+      if (openSea?.tokenUrl) refs.push(openSea.tokenUrl);
       return refs;
     }
 
@@ -1899,8 +1892,11 @@
       if (openSea?.name) bits.push(openSea.name);
       if (openSea?.description) bits.push(openSea.description);
       if (openSea?.totalUnits !== null && openSea?.totalUnits !== undefined) bits.push(`Total units: ${openSea.totalUnits}`);
-      if (openSea?.mintedDate) bits.push(`Minted date: ${openSea.mintedDate}`);
-      if (openSea?.tokenUrl) bits.push(`View on OpenSea: ${openSea.tokenUrl}`);
+      if (openSea?.mintedDate) {
+        bits.push(`Minted date: ${openSea.mintedDate}`);
+      } else {
+        bits.push(`Minted date: not available`);
+      }
       bits.push(`#${S.keyword}`);
       getExtraKeywords().forEach(tag => bits.push(`#${tag}`));
       return bits.filter(Boolean).join('\n\n');
@@ -2018,8 +2014,8 @@
         setSyncState(rowKey, { status: 'broadcasted', txid, sizeBytes: size });
         appendLog(`Broadcasted ${rowKey} in tx ${txid}.`, 'good');
         // For non-IPFS items, immediately mark as processed locally.
-        if (!row.cid && row.sourceKey) {
-          S.processedSrcKeys.add(row.sourceKey);
+        if (!row.cid && row.tokenUrl) {
+          S.processedTokenUrls.add(row.tokenUrl.toLowerCase());
           row.hasP2fk = true;
         }
       } catch (error) {
@@ -2064,15 +2060,14 @@
 
         const [p2fkItems, openSeaItems] = await Promise.all([loadP2fkItems(S.keyword), loadOpenSeaItems(S.openSeaUser)]);
         S.p2fkItems = p2fkItems;
-        S.openSeaItems = openSeaItems.filter(item => item.cid || item.sourceKey || item.sourceUrl);
-        // Rebuild processedSrcKeys from fresh p2fk data.
-        S.processedSrcKeys.clear();
-        const srcKeyRe2 = new RegExp(SRC_KEY_RE.source, 'gi');
+        S.openSeaItems = openSeaItems.filter(item => item.cid || item.tokenUrl || item.sourceUrl);
+        // Rebuild processedTokenUrls from fresh p2fk data.
+        S.processedTokenUrls.clear();
         p2fkItems.forEach(item => {
           // rawRoot.message keeps hidden <<...>> tokens while item.message is cleaned display text.
           const text = getSourceKeyScanText(item);
           let m;
-          while ((m = srcKeyRe2.exec(text)) !== null) S.processedSrcKeys.add(m[1].toLowerCase());
+          while ((m = OPENSEA_URL_RE.exec(text)) !== null) S.processedTokenUrls.add(m[0].toLowerCase());
         });
         buildComparisonRows();
 
