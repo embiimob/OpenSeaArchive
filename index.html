@@ -1619,7 +1619,7 @@
       );
       const openseaUrl = norm(token?.opensea_url || token?.permalink || token?.asset_url);
       const totalUnits = token?.total_supply ?? (Array.isArray(token?.owners) ? token.owners.reduce((sum, o) => sum + (Number(o?.quantity) || 0), 0) : null);
-      const mintedDate = norm(token?.created_at || token?.updated_at);
+      const mintedDate = norm(collection?.created_date || token?.created_at || token?.updated_at);
       const artistMeta = resolveOpenSeaArtistMeta(token);
       return {
         source: entry.source,
