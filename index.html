@@ -1565,6 +1565,9 @@
         const u = new URL(urlStr);
         u.searchParams.delete('w');
         u.searchParams.delete('h');
+        if (u.hostname === 'i2c.seadn.io') {
+          u.hostname = 'raw2.seadn.io';
+        }
         return u.toString();
       } catch (e) {
         return urlStr;
@@ -1575,10 +1578,10 @@
       const metadataUri = norm(token?.metadata_url || token?.token_uri || fallback?.metadataUri || '');
       const sourceCandidates = [
         token?.original_animation_url,
-        token?.original_image_url,
         token?.animation_original_url,
-        token?.animation_url,
+        token?.original_image_url,
         token?.image_original_url,
+        token?.animation_url,
         token?.image_url,
         token?.display_image_url,
         metadataUri,
@@ -1591,10 +1594,10 @@
       }).find(Boolean) || '';
       const artifactUri = cleanUrl(norm(
         token?.original_animation_url
-        || token?.original_image_url
         || token?.animation_original_url
-        || token?.animation_url
+        || token?.original_image_url
         || token?.image_original_url
+        || token?.animation_url
         || token?.image_url
         || token?.display_image_url
         || metadataUri
