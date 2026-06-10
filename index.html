@@ -1565,6 +1565,9 @@
         const u = new URL(urlStr);
         u.searchParams.delete('w');
         u.searchParams.delete('h');
+        if (u.hostname === 'i2c.seadn.io') {
+          u.hostname = 'raw2.seadn.io';
+        }
         return u.toString();
       } catch (e) {
         return urlStr;
