@@ -1128,28 +1128,27 @@
       if (!S.keyring) S.keyring = kr;
       const [cA, cB] = kr.changes;
 
-      // Fetch change-address UTXOs first; only fetch main if neither change address has any.
-      const [utxosCA, utxosCB] = await Promise.all([fetchSignerUtxos(cA), fetchSignerUtxos(cB)]);
-      let allUtxos = [...utxosCA, ...utxosCB];
-      let mainFetched = false;
-      if (!allUtxos.length) {
-        const utxosMain = await fetchSignerUtxos(kr.main);
-        allUtxos = utxosMain;
-        mainFetched = true;
-      }
-      if (!allUtxos.length) throw new Error('No confirmed UTXOs found');
-
       const feeRate = await getCachedFeeRate();
       const estFee = (inputs, outputsCount) => Math.ceil((10 + 148 * inputs + 34 * outputsCount) * feeRate);
       const outSats = outputs.map(o => ({ addr: o.addr, sat: Math.round(o.amount * 1e8) }));
       const totalOut = outSats.reduce((s, o) => s + o.sat, 0);
 
+      // Check balances of change addresses first before fetching UTXOs
+      const [balCA, balCB] = await Promise.all([getBalance(cA.addr), getBalance(cB.addr)]);
+
+      const utxoPromises = [];
+      if (balCA.confirmed > 0) utxoPromises.push(fetchSignerUtxos(cA));
+      if (balCB.confirmed > 0) utxoPromises.push(fetchSignerUtxos(cB));
+
+      const changeUtxosArrays = await Promise.all(utxoPromises);
+      let allUtxos = changeUtxosArrays.flat();
+      let mainFetched = false;
+
       const totalsByAddr = new Map();
       allUtxos.forEach(u => totalsByAddr.set(u.srcAddr, (totalsByAddr.get(u.srcAddr) || 0) + Number(u.value || 0)));
 
-      // Sort candidates by balance descending; main is included only if we fetched it.
       const changeCandidates = [cA, cB].sort((a, b) => (totalsByAddr.get(b.addr) || 0) - (totalsByAddr.get(a.addr) || 0));
-      const candidates = mainFetched ? [...changeCandidates, kr.main] : changeCandidates;
+      const candidates = changeCandidates;
 
       let selected = null, selectedUtxos = [], selectedTotal = 0;
       for (const src of candidates) {
@@ -1164,11 +1163,8 @@
         if (selectedUtxos.length) break;
       }
 
-      // If no single address covers the amount, try mixing across all fetched UTXOs.
-      // If main hasn't been fetched yet, fetch it now as a last resort.
-      if (!selectedUtxos.length && !mainFetched) {
-        const utxosMain = await fetchSignerUtxos(kr.main);
-        allUtxos = [...allUtxos, ...utxosMain];
+      if (!selectedUtxos.length) {
+        // Try mixing change address UTXOs
         const mixPool = [...allUtxos].sort((a, b) => b.value - a.value);
         let local = [], total = 0;
         for (const u of mixPool) {
@@ -1177,13 +1173,24 @@
             selectedUtxos = local; selectedTotal = total; break;
           }
         }
-      } else if (!selectedUtxos.length) {
-        const mixPool = [...allUtxos].sort((a, b) => b.value - a.value);
-        let local = [], total = 0;
-        for (const u of mixPool) {
-          local.push(u); total += u.value;
-          if (total >= totalOut + estFee(local.length, outSats.length + 1)) {
-            selectedUtxos = local; selectedTotal = total; break;
+      }
+
+      // If change addresses don't have enough, check main balance as a last resort
+      if (!selectedUtxos.length) {
+        const balMain = await getBalance(kr.main.addr);
+        if (balMain.confirmed > 0) {
+          const utxosMain = await fetchSignerUtxos(kr.main);
+          allUtxos = [...allUtxos, ...utxosMain];
+          mainFetched = true;
+
+          // Re-evaluate with main's UTXOs
+          const mixPool = [...allUtxos].sort((a, b) => b.value - a.value);
+          let local = [], total = 0;
+          for (const u of mixPool) {
+            local.push(u); total += u.value;
+            if (total >= totalOut + estFee(local.length, outSats.length + 1)) {
+              selectedUtxos = local; selectedTotal = total; break;
+            }
           }
         }
       }
