@@ -2005,6 +2005,10 @@
           if (!rowKey) return true;
           const row = (S.comparisonRows || []).find(r => r.rowKey === rowKey);
           return row ? !row.hasP2fk : true;
+        }).sort((a, b) => {
+          const aKey = a.cid || (a.tokenUrl ? `src:${a.tokenUrl}` : '');
+          const bKey = b.cid || (b.tokenUrl ? `src:${b.tokenUrl}` : '');
+          return aKey.localeCompare(bKey);
         });
 
         const ipfsCount = S.openSeaItems.filter(i => i.cid).length;
@@ -2278,6 +2282,10 @@
           if (!rowKey) return true;
           const row = (S.comparisonRows || []).find(r => r.rowKey === rowKey);
           return row ? !row.hasP2fk : true;
+        }).sort((a, b) => {
+          const aKey = a.cid || (a.tokenUrl ? `src:${a.tokenUrl}` : '');
+          const bKey = b.cid || (b.tokenUrl ? `src:${b.tokenUrl}` : '');
+          return aKey.localeCompare(bKey);
         });
 
         if (unarchivedItems.length > 0) {
