@@ -299,10 +299,18 @@
             <button id="generateOpenSeaKeyBtn" type="button">Generate instant API key</button>
           </div>
         </div>
+        <div class="field">
+          <label for="reAddInput">Re-add single source document to IPFS (OpenSea item URL)</label>
+          <div class="field-inline">
+            <input id="reAddInput" placeholder="https://opensea.io/assets/ethereum/..." autocomplete="off" spellcheck="false">
+            <button id="reAddBtn" type="button">Re-add to IPFS</button>
+          </div>
+        </div>
         <div class="btn-row">
           <button id="analyzeBtn" class="primary">Analyze keyword vs OpenSea</button>
           <button id="startSyncBtn" class="good">Start auto sync unmatched</button>
           <button id="stopSyncBtn" class="warn">Stop auto sync</button>
+          <button id="exportCsvBtn" class="primary">Export CSV</button>
         </div>
         <div id="analysisStatus" class="status">Enter a keyword and OpenSea profile/address, then analyze.</div>
       </section>
@@ -1484,7 +1492,7 @@
         next = norm(data?.next || '');
         if (!next) break;
         // Small delay to prevent 429 when paginating through large collections
-        await delay(500);
+        await delay(1000);
       }
       return all;
     }
@@ -1574,72 +1582,73 @@
       const targets = items.filter(item => item?.contract && item?.tokenId);
       if (!targets.length) return;
       const collectionCache = new Map();
-      const CHUNK_SIZE = 5;
-      for (let i = 0; i < targets.length; i += CHUNK_SIZE) {
-        const chunk = targets.slice(i, i + CHUNK_SIZE);
-        await Promise.allSettled(chunk.map(async item => {
-          let detailToken = null;
-          try {
-            const payload = await fetchOpenSea(`/chain/ethereum/contract/${encodeURIComponent(item.contract)}/nfts/${encodeURIComponent(item.tokenId)}`);
-            detailToken = payload?.nft || payload?.token || payload || null;
-          } catch {}
 
-          let mintTimestamp = null;
-          try {
-            const eventsPayload = await fetchOpenSea(`/events/chain/ethereum/contract/${encodeURIComponent(item.contract)}/nfts/${encodeURIComponent(item.tokenId)}`, { event_type: 'transfer' });
-            const events = eventsPayload?.asset_events || [];
-            const mintEvent = events.find(e => e.transfer_type === 'mint' || e.from_address === '0x0000000000000000000000000000000000000000');
-            if (mintEvent && mintEvent.event_timestamp) {
-              mintTimestamp = mintEvent.event_timestamp;
+      for (const item of targets) {
+        let detailToken = null;
+        try {
+          const payload = await fetchOpenSea(`/chain/ethereum/contract/${encodeURIComponent(item.contract)}/nfts/${encodeURIComponent(item.tokenId)}`);
+          detailToken = payload?.nft || payload?.token || payload || null;
+        } catch (err) {
+          console.warn(`Failed to fetch token detail for ${item.contract}/${item.tokenId}`, err);
+        }
+        await delay(1000);
+
+        let mintTimestamp = null;
+        try {
+          const eventsPayload = await fetchOpenSea(`/events/chain/ethereum/contract/${encodeURIComponent(item.contract)}/nfts/${encodeURIComponent(item.tokenId)}`, { event_type: 'transfer' });
+          const events = eventsPayload?.asset_events || [];
+          const mintEvent = events.find(e => e.transfer_type === 'mint' || e.from_address === '0x0000000000000000000000000000000000000000');
+          if (mintEvent && mintEvent.event_timestamp) {
+            mintTimestamp = mintEvent.event_timestamp;
+          }
+        } catch (err) {
+          console.warn(`Failed to fetch events for ${item.contract}/${item.tokenId}`, err);
+        }
+        await delay(1000);
+
+        let collectionDetail = null;
+        // In OpenSea API v2, detailToken.collection is a plain slug string, not an object.
+        const rawTokenCollection = detailToken?.collection;
+        const collectionSlug = norm(
+          (typeof rawTokenCollection === 'string' ? rawTokenCollection : (rawTokenCollection?.slug || rawTokenCollection?.collection))
+          || item?.collectionSlug
+        );
+        if (collectionSlug) {
+          if (!collectionCache.has(collectionSlug)) {
+            try {
+              const payload = await fetchOpenSea(`/collections/${encodeURIComponent(collectionSlug)}`);
+              // In OpenSea API v2 the response IS the collection object (payload.collection is the slug string, not the object).
+              collectionCache.set(collectionSlug, (payload && typeof payload === 'object' && !Array.isArray(payload)) ? payload : null);
+            } catch (err) {
+              console.warn(`Failed to fetch collection detail for slug ${collectionSlug}`, err);
+              collectionCache.set(collectionSlug, null);
             }
-          } catch {}
-
-          let collectionDetail = null;
-          // In OpenSea API v2, detailToken.collection is a plain slug string, not an object.
-          const rawTokenCollection = detailToken?.collection;
-          const collectionSlug = norm(
-            (typeof rawTokenCollection === 'string' ? rawTokenCollection : (rawTokenCollection?.slug || rawTokenCollection?.collection))
-            || item?.collectionSlug
-          );
-          if (collectionSlug) {
-            if (!collectionCache.has(collectionSlug)) {
-              collectionCache.set(collectionSlug, (async () => {
-                try {
-                  const payload = await fetchOpenSea(`/collections/${encodeURIComponent(collectionSlug)}`);
-                  // In OpenSea API v2 the response IS the collection object (payload.collection is the slug string, not the object).
-                  return (payload && typeof payload === 'object' && !Array.isArray(payload)) ? payload : null;
-                } catch (err) {
-                  console.warn(`Failed to fetch collection detail for slug ${collectionSlug}`, err);
-                  return null;
-                }
-              })());
-            }
-            collectionDetail = await collectionCache.get(collectionSlug);
+            await delay(1000);
           }
+          collectionDetail = collectionCache.get(collectionSlug);
+        }
 
-          const artistMeta = resolveOpenSeaArtistMeta(detailToken || {}, collectionDetail || null);
-          if (artistMeta.creatorAddress) item.creatorAddress = artistMeta.creatorAddress;
-          if (artistMeta.artistAlias && !ETH_ADDR_RE.test(artistMeta.artistAlias)) {
-            item.artistAlias = artistMeta.artistAlias;
-          }
+        const artistMeta = resolveOpenSeaArtistMeta(detailToken || {}, collectionDetail || null);
+        if (artistMeta.creatorAddress) item.creatorAddress = artistMeta.creatorAddress;
+        if (artistMeta.artistAlias && !ETH_ADDR_RE.test(artistMeta.artistAlias)) {
+          item.artistAlias = artistMeta.artistAlias;
+        }
 
-          const tokenUrl = norm(detailToken?.opensea_url || detailToken?.permalink || detailToken?.asset_url);
-          if (tokenUrl) item.tokenUrl = tokenUrl;
-          if (detailToken && typeof detailToken === 'object') {
-            const media = normalizeOpenSeaMedia(detailToken, item);
-            if (media.sourceUrl) item.sourceUrl = media.sourceUrl;
-            if (media.artifactUri) item.artifactUri = media.artifactUri;
-            if (media.displayUri) item.displayUri = media.displayUri;
-            if (media.thumbnailUri) item.thumbnailUri = media.thumbnailUri;
-            if (media.metadataUri) item.metadataUri = media.metadataUri;
-            if (media.mime) item.mime = media.mime;
-          }
+        const tokenUrl = norm(detailToken?.opensea_url || detailToken?.permalink || detailToken?.asset_url);
+        if (tokenUrl) item.tokenUrl = tokenUrl;
+        if (detailToken && typeof detailToken === 'object') {
+          const media = normalizeOpenSeaMedia(detailToken, item);
+          if (media.sourceUrl) item.sourceUrl = media.sourceUrl;
+          if (media.artifactUri) item.artifactUri = media.artifactUri;
+          if (media.displayUri) item.displayUri = media.displayUri;
+          if (media.thumbnailUri) item.thumbnailUri = media.thumbnailUri;
+          if (media.metadataUri) item.metadataUri = media.metadataUri;
+          if (media.mime) item.mime = media.mime;
+        }
 
-          if (mintTimestamp) {
-             item.mintedDate = new Date(mintTimestamp * 1000).toISOString();
-          }
-        }));
-        await delay(1000); // Drastically slow down the rate of requests
+        if (mintTimestamp) {
+           item.mintedDate = new Date(mintTimestamp * 1000).toISOString();
+        }
       }
     }
 
@@ -1649,25 +1658,26 @@
       const uniqueCreators = [...new Set(chunk.map(item => item.creatorAddress).filter(a => ETH_ADDR_RE.test(a)))];
       if (uniqueCreators.length) {
         const nameMap = new Map();
-        const CHUNK_SIZE = 5;
-        for (let i = 0; i < uniqueCreators.length; i += CHUNK_SIZE) {
-          const uChunk = uniqueCreators.slice(i, i + CHUNK_SIZE);
-          await Promise.allSettled(uChunk.map(async addr => {
-            try {
-              const payload = await fetchOpenSea(`/accounts/${encodeURIComponent(addr)}`);
-              const account = payload?.account || payload || {};
-              let name = norm(account.username || account.display_name || account.name || '');
-              if (!name) {
-                try {
-                  const rp = await fetchOpenSea(`/accounts/resolve/${encodeURIComponent(addr)}`);
-                  const ra = rp?.account || rp || {};
-                  name = norm(ra.username || ra.ens_name || ra.display_name || ra.name || '');
-                } catch {}
+        for (const addr of uniqueCreators) {
+          try {
+            const payload = await fetchOpenSea(`/accounts/${encodeURIComponent(addr)}`);
+            const account = payload?.account || payload || {};
+            let name = norm(account.username || account.display_name || account.name || '');
+            await delay(1000);
+            if (!name) {
+              try {
+                const rp = await fetchOpenSea(`/accounts/resolve/${encodeURIComponent(addr)}`);
+                const ra = rp?.account || rp || {};
+                name = norm(ra.username || ra.ens_name || ra.display_name || ra.name || '');
+              } catch (err) {
+                console.warn(`Failed to resolve ENS for ${addr}`, err);
               }
-              if (name) nameMap.set(addr.toLowerCase(), name);
-            } catch {}
-          }));
-          await delay(1000); // Drastically slow down the rate of requests
+              await delay(1000);
+            }
+            if (name) nameMap.set(addr.toLowerCase(), name);
+          } catch (err) {
+            console.warn(`Failed to fetch account detail for ${addr}`, err);
+          }
         }
         for (const item of chunk) {
           if (!item.creatorAddress) continue;
@@ -1720,13 +1730,6 @@
         deduped.push(item);
       }
       appendLog(`Loaded ${deduped.length} OpenSea entries (${owned.length} owned).`, 'good');
-
-      // Process the first 10 immediately so the UI populates quickly
-      const initialChunk = deduped.slice(0, 10);
-      if (initialChunk.length) {
-        appendLog(`Enriching metadata for the first ${initialChunk.length} items…`);
-        await processEnrichmentChunk(initialChunk);
-      }
 
       return deduped;
     }
@@ -1995,13 +1998,40 @@
           while ((m = OPENSEA_URL_RE.exec(text)) !== null) S.processedTokenUrls.add(m[0].toLowerCase());
         });
         buildComparisonRows();
-        const queueInfo = queueUnmatched(MIN_SYNC_QUEUE_TARGET);
+
+        // Only enrich items that have not yet been archived.
+        const unarchivedItems = openSeaItems.filter(item => {
+          const rowKey = item.cid || (item.tokenUrl ? `src:${item.tokenUrl}` : null);
+          if (!rowKey) return true;
+          const row = (S.comparisonRows || []).find(r => r.rowKey === rowKey);
+          return row ? !row.hasP2fk : true;
+        }).sort((a, b) => {
+          const aKey = a.cid || (a.tokenUrl ? `src:${a.tokenUrl}` : '');
+          const bKey = b.cid || (b.tokenUrl ? `src:${b.tokenUrl}` : '');
+          return aKey.localeCompare(bKey);
+        });
+
         const ipfsCount = S.openSeaItems.filter(i => i.cid).length;
         const nonIpfsCount = S.openSeaItems.filter(i => !i.cid).length;
-        setStatus('analysisStatus', `Analysis complete for #${keyword} and ${user.address}. Found ${ipfsCount} IPFS + ${nonIpfsCount} non-IPFS OpenSea items; ${S.p2fkItems.length} p2fk refs. Queue waiting total: ${queueInfo.pendingTotal} item(s). Background processing remaining items...`, 'good');
 
-        // Start background enrichment process
-        startBackgroundEnrichment(openSeaItems, 10, currentAnalysisId);
+        if (unarchivedItems.length > 0) {
+          const initialChunk = unarchivedItems.slice(0, 10);
+          if (initialChunk.length) {
+            appendLog(`Enriching metadata for the first ${initialChunk.length} unarchived items…`);
+            await processEnrichmentChunk(initialChunk);
+            buildComparisonRows(); // re-render after enrichment
+          }
+
+          const queueInfo = queueUnmatched(MIN_SYNC_QUEUE_TARGET);
+          setStatus('analysisStatus', `Analysis complete for #${keyword} and ${user.address}. Found ${ipfsCount} IPFS + ${nonIpfsCount} non-IPFS OpenSea items; ${S.p2fkItems.length} p2fk refs. Queue waiting total: ${queueInfo.pendingTotal} item(s). Background processing remaining items...`, 'good');
+
+          // Start background enrichment process for the remaining unarchived
+          startBackgroundEnrichment(unarchivedItems, 10, currentAnalysisId);
+        } else {
+          appendLog(`No unarchived items to enrich.`);
+          const queueInfo = queueUnmatched(MIN_SYNC_QUEUE_TARGET);
+          setStatus('analysisStatus', `Analysis complete for #${keyword} and ${user.address}. Found ${ipfsCount} IPFS + ${nonIpfsCount} non-IPFS OpenSea items; ${S.p2fkItems.length} p2fk refs. Queue waiting total: ${queueInfo.pendingTotal} item(s).`, 'good');
+        }
       } catch (error) {
         appendLog(`Analysis failed: ${error.message}`, 'bad');
         setStatus('analysisStatus', error.message || 'Analysis failed.', 'bad');
@@ -2246,14 +2276,42 @@
         });
         buildComparisonRows();
 
-        // Start background enrichment process
-        startBackgroundEnrichment(openSeaItems, 10, currentAnalysisId);
+        // Only enrich items that have not yet been archived.
+        const unarchivedItems = openSeaItems.filter(item => {
+          const rowKey = item.cid || (item.tokenUrl ? `src:${item.tokenUrl}` : null);
+          if (!rowKey) return true;
+          const row = (S.comparisonRows || []).find(r => r.rowKey === rowKey);
+          return row ? !row.hasP2fk : true;
+        }).sort((a, b) => {
+          const aKey = a.cid || (a.tokenUrl ? `src:${a.tokenUrl}` : '');
+          const bKey = b.cid || (b.tokenUrl ? `src:${b.tokenUrl}` : '');
+          return aKey.localeCompare(bKey);
+        });
 
-        const queueInfo = queueUnmatched(MIN_SYNC_QUEUE_TARGET);
-        S.nextDiffQueryAt = queueInfo.queued ? null : Date.now() + DIFF_RECHECK_MS;
-        if (queueInfo.pendingTotal) appendLog(`Queue refreshed from difference query: ${queueInfo.pendingTotal} total waiting to sync (${queueInfo.queued} currently queued, ${queueInfo.added} newly queued).`, 'good');
-        else appendLog('No new OpenSea differences found. Next difference query in 1 hour.', 'warn');
-        return queueInfo.queued;
+        if (unarchivedItems.length > 0) {
+          const initialChunk = unarchivedItems.slice(0, 10);
+          if (initialChunk.length) {
+            appendLog(`Enriching metadata for the first ${initialChunk.length} unarchived items…`);
+            await processEnrichmentChunk(initialChunk);
+            buildComparisonRows(); // re-render after enrichment
+          }
+
+          const queueInfo = queueUnmatched(MIN_SYNC_QUEUE_TARGET);
+          S.nextDiffQueryAt = queueInfo.queued ? null : Date.now() + DIFF_RECHECK_MS;
+          if (queueInfo.pendingTotal) appendLog(`Queue refreshed from difference query: ${queueInfo.pendingTotal} total waiting to sync (${queueInfo.queued} currently queued, ${queueInfo.added} newly queued).`, 'good');
+          else appendLog('No new OpenSea differences found. Next difference query in 1 hour.', 'warn');
+
+          // Start background enrichment process for the remaining unarchived
+          startBackgroundEnrichment(unarchivedItems, 10, currentAnalysisId);
+          return queueInfo.queued;
+        } else {
+          appendLog(`No unarchived items to enrich.`);
+          const queueInfo = queueUnmatched(MIN_SYNC_QUEUE_TARGET);
+          S.nextDiffQueryAt = queueInfo.queued ? null : Date.now() + DIFF_RECHECK_MS;
+          if (queueInfo.pendingTotal) appendLog(`Queue refreshed from difference query: ${queueInfo.pendingTotal} total waiting to sync (${queueInfo.queued} currently queued, ${queueInfo.added} newly queued).`, 'good');
+          else appendLog('No new OpenSea differences found. Next difference query in 1 hour.', 'warn');
+          return queueInfo.queued;
+        }
       } finally {
         S.diffQueryRunning = false;
       }
@@ -2361,10 +2419,113 @@
     $('analyzeBtn').addEventListener('click', analyze);
     $('startSyncBtn').addEventListener('click', startAutoSync);
     $('stopSyncBtn').addEventListener('click', stopAutoSync);
+    $('exportCsvBtn').addEventListener('click', () => {
+      const rows = S.comparisonRows || [];
+      const archivedRows = rows.filter(r => r.hasP2fk);
+      if (archivedRows.length === 0) {
+        appendLog('No archived items to export.', 'warn');
+        return;
+      }
+
+      const escapeCsv = (str) => {
+        if (!str) return '';
+        const s = String(str);
+        if (/[",\n\r]/.test(s)) {
+          return `"${s.replace(/"/g, '""')}"`;
+        }
+        return s;
+      };
+
+      const header = ['Title', 'OpenSea URL', 'OpenSea Source URL', 'IPFS Gateway URL', 'Sup!? URN', 'CID'];
+      const csvData = [header.join(',')];
+
+      archivedRows.forEach(row => {
+        const openSea = row.openSeaItems && row.openSeaItems[0] ? row.openSeaItems[0] : {};
+        const title = openSea.name || '';
+        const openseaUrl = openSea.tokenUrl || '';
+        const sourceUrl = openSea.sourceUrl || '';
+
+        let cid = row.cid || '';
+        let urn = row.urn || '';
+
+        // If we don't have cid/urn directly on row, try to extract from p2fkItems
+        if (!cid || !urn) {
+           const p2fk = row.p2fkItems && row.p2fkItems[0] ? row.p2fkItems[0] : null;
+           if (p2fk) {
+               cid = cid || p2fk.cid || '';
+               urn = urn || p2fk.urn || '';
+           }
+        }
+
+        const ipfsUrl = cid ? buildIpfsUrl(cid) : '';
+
+        const csvRow = [
+          title,
+          openseaUrl,
+          sourceUrl,
+          ipfsUrl,
+          urn,
+          cid
+        ].map(escapeCsv);
+
+        csvData.push(csvRow.join(','));
+      });
+
+      const blob = new Blob([csvData.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.setAttribute('download', 'opensea_archive.csv');
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
     $('generateOpenSeaKeyBtn').addEventListener('click', () => createOpenSeaInstantApiKey({ auto: false }).catch(err => {
       appendLog(err.message || 'OpenSea key generation failed.', 'bad');
       setStatus('analysisStatus', err.message || 'OpenSea key generation failed.', 'bad');
     }));
+
+    $('reAddBtn').addEventListener('click', async () => {
+      const urlStr = norm($('reAddInput').value);
+      if (!urlStr) {
+        appendLog('Please enter an OpenSea item URL to re-add to IPFS.', 'bad');
+        return;
+      }
+      setStatus('analysisStatus', 'Fetching OpenSea item for IPFS re-add...', 'info');
+      try {
+        let contract = '';
+        let tokenId = '';
+        const match = urlStr.match(/assets\/(?:ethereum\/)?(0x[a-fA-F0-9]{40})\/(\d+)/i);
+        if (match) {
+          contract = match[1];
+          tokenId = match[2];
+        } else {
+           throw new Error('Invalid OpenSea URL format. Could not extract contract and tokenId.');
+        }
+
+        const payload = await fetchOpenSea(`/chain/ethereum/contract/${encodeURIComponent(contract)}/nfts/${encodeURIComponent(tokenId)}`);
+        const detailToken = payload?.nft || payload?.token || payload || null;
+
+        if (!detailToken) {
+           throw new Error('Could not retrieve token details from OpenSea.');
+        }
+
+        const media = normalizeOpenSeaMedia(detailToken);
+        if (!media.sourceUrl) {
+           throw new Error('Could not find a valid sourceUrl for this item.');
+        }
+
+        setStatus('analysisStatus', `Uploading source content to IPFS...`, 'info');
+        const upload = await uploadToIpfsIngress(media.sourceUrl);
+        appendLog(`Successfully re-added item to IPFS. CID: ${upload.cid}`, 'good');
+        setStatus('analysisStatus', `Re-add complete. CID: ${upload.cid}`, 'good');
+
+      } catch (err) {
+        appendLog(`Re-add to IPFS failed: ${err.message}`, 'bad');
+        setStatus('analysisStatus', `Re-add failed: ${err.message}`, 'bad');
+      }
+    });
 
     setInterval(refreshConfirmationStates, 60000);
     setInterval(runOpenSeaKeyAutoRenew, OPEN_SEA_KEY_RENEW_CHECK_MS);
