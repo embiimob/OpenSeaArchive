@@ -344,8 +344,34 @@
         </div>
         <div class="btn-row">
           <button id="reAddBtn" class="primary">Re-add to IPFS</button>
+          <button id="reAddAnalyzeBtn" class="primary">Analyze</button>
         </div>
         <div id="singleSyncStatus" class="status">Enter an OpenSea URL to extract its IPFS hash and re-add to relay.</div>
+        <div id="singleItemFields" style="display: none; flex-direction: column; gap: 10px; margin-top: 15px;">
+          <div class="field">
+            <label for="singleItemTitle">Title</label>
+            <input id="singleItemTitle" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="singleItemDesc">Description</label>
+            <textarea id="singleItemDesc" rows="3" spellcheck="false"></textarea>
+          </div>
+          <div class="field">
+            <label for="singleItemArtist">Artist Name</label>
+            <input id="singleItemArtist" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="singleItemUrn">IPFS URN (e.g., IPFS:CID/filename.jpg)</label>
+            <input id="singleItemUrn" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="singleItemKeywords">Keywords</label>
+            <input id="singleItemKeywords" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="btn-row">
+            <button id="reAddSyncBtn" class="primary">Sync manually</button>
+          </div>
+        </div>
       </section>
 
       <section class="card span-12">
@@ -629,6 +655,7 @@
               <div class="btn-row">
                 <button class="small-btn" data-sync-row="${esc(row.rowKey)}" ${(!row.hasOpenSea || row.hasP2fk) ? 'disabled' : ''}>Sync one</button>
                 <button class="small-btn" data-open-row="${esc(row.rowKey)}" ${!openSea?.tokenUrl ? 'disabled' : ''}>Open OpenSea</button>
+                ${state.status === 'failed' ? `<button class="small-btn" data-readd-row="${esc(row.rowKey)}">Re-add single</button>` : ''}
               </div>
             </td>
           </tr>`;
@@ -638,6 +665,15 @@
         const row = (S.comparisonRows || []).find(item => item.rowKey === btn.dataset.openRow);
         const url = row?.openSeaItems?.[0]?.tokenUrl;
         if (url) window.open(url, '_blank', 'noopener,noreferrer');
+      }));
+      body.querySelectorAll('[data-readd-row]').forEach(btn => btn.addEventListener('click', () => {
+        const row = (S.comparisonRows || []).find(item => item.rowKey === btn.dataset.readdRow);
+        const url = row?.openSeaItems?.[0]?.tokenUrl;
+        if (url) {
+          $('reAddInput').value = url;
+          $('reAddInput').scrollIntoView({ behavior: 'smooth', block: 'center' });
+          $('reAddAnalyzeBtn').click();
+        }
       }));
       renderSummary();
     }
@@ -2532,6 +2568,110 @@
       } catch (err) {
         appendLog(`Re-add to IPFS failed: ${err.message}`, 'bad');
         setStatus('singleSyncStatus', `Re-add failed: ${err.message}`, 'bad');
+      }
+    });
+
+    $('reAddAnalyzeBtn').addEventListener('click', async () => {
+      const urlStr = norm($('reAddInput').value);
+      if (!urlStr) {
+        setStatus('singleSyncStatus', 'Please enter an OpenSea item URL to analyze.', 'bad');
+        return;
+      }
+      setStatus('singleSyncStatus', 'Fetching OpenSea item details...', 'info');
+      $('singleItemFields').style.display = 'none';
+      try {
+        let contract = '';
+        let tokenId = '';
+        const match = urlStr.match(/assets\/(?:ethereum\/)?(0x[a-fA-F0-9]{40})\/(\d+)/i);
+        if (match) {
+          contract = match[1];
+          tokenId = match[2];
+        } else {
+           throw new Error('Invalid OpenSea URL format. Could not extract contract and tokenId.');
+        }
+
+        const payload = await fetchOpenSea(`/chain/ethereum/contract/${encodeURIComponent(contract)}/nfts/${encodeURIComponent(tokenId)}`);
+        const detailToken = payload?.nft || payload?.token || payload || null;
+
+        if (!detailToken) {
+           throw new Error('Could not retrieve token details from OpenSea.');
+        }
+
+        let collectionDetail = null;
+        const rawTokenCollection = detailToken?.collection;
+        const collectionSlug = norm(typeof rawTokenCollection === 'string' ? rawTokenCollection : (rawTokenCollection?.slug || rawTokenCollection?.collection));
+        if (collectionSlug) {
+           try {
+             const collPayload = await fetchOpenSea(`/collections/${encodeURIComponent(collectionSlug)}`);
+             collectionDetail = (collPayload && typeof collPayload === 'object' && !Array.isArray(collPayload)) ? collPayload : null;
+           } catch (err) {
+             console.warn('Failed to fetch collection detail for analyze', err);
+           }
+        }
+
+        const artistMeta = resolveOpenSeaArtistMeta(detailToken, collectionDetail);
+
+        $('singleItemTitle').value = norm(detailToken.name || '');
+        $('singleItemDesc').value = norm(detailToken.description || '');
+        $('singleItemArtist').value = norm(artistMeta.artistAlias || artistMeta.ownerAlias || '');
+        $('singleItemKeywords').value = getExtraKeywords().map(k => '#' + k).join(' ');
+
+        $('singleItemUrn').value = '';
+
+        $('singleItemFields').style.display = 'flex';
+        setStatus('singleSyncStatus', 'Item analyzed. Edit fields as needed and sync manually.', 'good');
+
+      } catch (err) {
+        setStatus('singleSyncStatus', `Analysis failed, but you may still enter details manually. Error: ${err.message}`, 'bad');
+        $('singleItemFields').style.display = 'flex';
+      }
+    });
+
+    $('reAddSyncBtn').addEventListener('click', async () => {
+      if (!S.keyring) {
+        setStatus('singleSyncStatus', 'Unlock the wallet before syncing.', 'bad');
+        return;
+      }
+      const urnRaw = norm($('singleItemUrn').value).replace(/\\/g, '/');
+      if (!urnRaw) {
+        setStatus('singleSyncStatus', 'Please provide an IPFS URN.', 'bad');
+        return;
+      }
+
+      const title = norm($('singleItemTitle').value);
+      const desc = norm($('singleItemDesc').value);
+      const artist = norm($('singleItemArtist').value);
+      const keywords = norm($('singleItemKeywords').value).split(/[,\s]+/).map(t => t.replace(/^#+/, '')).filter(Boolean);
+
+      setStatus('singleSyncStatus', 'Syncing manual item...', 'info');
+      try {
+        const attach = await normalizeAttach(urnRaw, { mime: '' });
+
+        const prefix = sanitize($('messagePrefixInput').value);
+        const bits = [];
+        if (prefix) bits.push(prefix);
+        if (artist) bits.push(`Artist: ${artist}`);
+        if (title) bits.push(title);
+        if (desc) bits.push(desc);
+
+        const keywBits = [];
+        if (S.keyword) keywBits.push(`#${S.keyword}`);
+        keywords.forEach(tag => keywBits.push(`#${tag}`));
+
+        const textToSync = [...bits, keywBits.filter(Boolean).join(' ')].filter(Boolean).join('\n\n');
+
+        const outputs = await buildMsgOutputs({
+          text: textToSync,
+          attachments: [attach.canonical, norm($('reAddInput').value)],
+          extras: [],
+          fromAddr: S.addr,
+        });
+
+        const txid = await broadcastTx(outputs);
+        S.lastBroadcastTxid = txid;
+        setStatus('singleSyncStatus', `Manual sync broadcasted. Tx: ${txid}`, 'good');
+      } catch (err) {
+        setStatus('singleSyncStatus', `Manual sync failed: ${err.message}`, 'bad');
       }
     });
 
