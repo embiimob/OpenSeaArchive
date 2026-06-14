@@ -299,13 +299,6 @@
             <button id="generateOpenSeaKeyBtn" type="button">Generate instant API key</button>
           </div>
         </div>
-        <div class="field">
-          <label for="reAddInput">Re-add single source document to IPFS (OpenSea item URL)</label>
-          <div class="field-inline">
-            <input id="reAddInput" placeholder="https://opensea.io/assets/ethereum/..." autocomplete="off" spellcheck="false">
-            <button id="reAddBtn" type="button">Re-add to IPFS</button>
-          </div>
-        </div>
         <div class="btn-row">
           <button id="analyzeBtn" class="primary">Analyze keyword vs OpenSea</button>
           <button id="startSyncBtn" class="good">Start auto sync unmatched</button>
@@ -313,11 +306,6 @@
           <button id="exportCsvBtn" class="primary">Export CSV</button>
         </div>
         <div id="analysisStatus" class="status">Enter a keyword and OpenSea profile/address, then analyze.</div>
-      </section>
-
-      <section class="card span-12">
-        <h2>Summary</h2>
-        <div id="summaryGrid" class="summary-grid"></div>
       </section>
 
       <section class="card span-12">
@@ -339,6 +327,25 @@
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section class="card span-12">
+        <h2>Summary</h2>
+        <div id="summaryGrid" class="summary-grid"></div>
+      </section>
+
+      <section class="card span-12">
+        <h2>Single Item Re-add</h2>
+        <div class="field-row">
+          <div class="field">
+            <label for="reAddInput">OpenSea item URL</label>
+            <input id="reAddInput" placeholder="https://opensea.io/assets/ethereum/..." autocomplete="off" spellcheck="false">
+          </div>
+        </div>
+        <div class="btn-row">
+          <button id="reAddBtn" class="primary">Re-add to IPFS</button>
+        </div>
+        <div id="singleSyncStatus" class="status">Enter an OpenSea URL to extract its IPFS hash and re-add to relay.</div>
       </section>
 
       <section class="card span-12">
@@ -2489,10 +2496,11 @@
     $('reAddBtn').addEventListener('click', async () => {
       const urlStr = norm($('reAddInput').value);
       if (!urlStr) {
+        setStatus('singleSyncStatus', 'Please enter an OpenSea item URL to re-add to IPFS.', 'bad');
         appendLog('Please enter an OpenSea item URL to re-add to IPFS.', 'bad');
         return;
       }
-      setStatus('analysisStatus', 'Fetching OpenSea item for IPFS re-add...', 'info');
+      setStatus('singleSyncStatus', 'Fetching OpenSea item for IPFS re-add...', 'info');
       try {
         let contract = '';
         let tokenId = '';
@@ -2516,14 +2524,14 @@
            throw new Error('Could not find a valid sourceUrl for this item.');
         }
 
-        setStatus('analysisStatus', `Uploading source content to IPFS...`, 'info');
+        setStatus('singleSyncStatus', `Uploading source content to IPFS...`, 'info');
         const upload = await uploadToIpfsIngress(media.sourceUrl);
         appendLog(`Successfully re-added item to IPFS. CID: ${upload.cid}`, 'good');
-        setStatus('analysisStatus', `Re-add complete. CID: ${upload.cid}`, 'good');
+        setStatus('singleSyncStatus', `Re-add complete. CID: ${upload.cid}`, 'good');
 
       } catch (err) {
         appendLog(`Re-add to IPFS failed: ${err.message}`, 'bad');
-        setStatus('analysisStatus', `Re-add failed: ${err.message}`, 'bad');
+        setStatus('singleSyncStatus', `Re-add failed: ${err.message}`, 'bad');
       }
     });
 
