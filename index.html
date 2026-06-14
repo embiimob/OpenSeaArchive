@@ -370,6 +370,7 @@
           </div>
           <div class="btn-row">
             <button id="reAddSyncBtn" class="primary">Sync manually</button>
+            <button id="reAddDownloadBtn" class="primary" style="display: none;">Download source file</button>
           </div>
         </div>
       </section>
@@ -2540,7 +2541,7 @@
       try {
         let contract = '';
         let tokenId = '';
-        const match = urlStr.match(/assets\/(?:ethereum\/)?(0x[a-fA-F0-9]{40})\/(\d+)/i);
+        const match = urlStr.match(/(?:assets|item)\/(?:ethereum\/)?(0x[a-fA-F0-9]{40})\/(\d+)/i);
         if (match) {
           contract = match[1];
           tokenId = match[2];
@@ -2582,7 +2583,7 @@
       try {
         let contract = '';
         let tokenId = '';
-        const match = urlStr.match(/assets\/(?:ethereum\/)?(0x[a-fA-F0-9]{40})\/(\d+)/i);
+        const match = urlStr.match(/(?:assets|item)\/(?:ethereum\/)?(0x[a-fA-F0-9]{40})\/(\d+)/i);
         if (match) {
           contract = match[1];
           tokenId = match[2];
@@ -2617,6 +2618,17 @@
         $('singleItemKeywords').value = getExtraKeywords().map(k => '#' + k).join(' ');
 
         $('singleItemUrn').value = '';
+
+        const media = normalizeOpenSeaMedia(detailToken);
+        const downloadBtn = $('reAddDownloadBtn');
+        if (media.sourceUrl) {
+          downloadBtn.style.display = 'inline-block';
+          downloadBtn.onclick = () => {
+            window.open(media.sourceUrl, '_blank', 'noopener,noreferrer');
+          };
+        } else {
+          downloadBtn.style.display = 'none';
+        }
 
         $('singleItemFields').style.display = 'flex';
         setStatus('singleSyncStatus', 'Item analyzed. Edit fields as needed and sync manually.', 'good');
