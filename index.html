@@ -299,18 +299,10 @@
             <button id="generateOpenSeaKeyBtn" type="button">Generate instant API key</button>
           </div>
         </div>
-        <div class="field">
-          <label for="reAddInput">Re-add single source document to IPFS (OpenSea item URL)</label>
-          <div class="field-inline">
-            <input id="reAddInput" placeholder="https://opensea.io/assets/ethereum/..." autocomplete="off" spellcheck="false">
-            <button id="reAddBtn" type="button">Re-add to IPFS</button>
-          </div>
-        </div>
         <div class="btn-row">
           <button id="analyzeBtn" class="primary">Analyze keyword vs OpenSea</button>
           <button id="startSyncBtn" class="good">Start auto sync unmatched</button>
           <button id="stopSyncBtn" class="warn">Stop auto sync</button>
-          <button id="exportCsvBtn" class="primary">Export CSV</button>
         </div>
         <div id="analysisStatus" class="status">Enter a keyword and OpenSea profile/address, then analyze.</div>
       </section>
@@ -1588,7 +1580,9 @@
         try {
           const payload = await fetchOpenSea(`/chain/ethereum/contract/${encodeURIComponent(item.contract)}/nfts/${encodeURIComponent(item.tokenId)}`);
           detailToken = payload?.nft || payload?.token || payload || null;
-        } catch {}
+        } catch (err) {
+          console.warn(`Failed to fetch token detail for ${item.contract}/${item.tokenId}`, err);
+        }
         await delay(1000);
 
         let mintTimestamp = null;
@@ -1599,7 +1593,9 @@
           if (mintEvent && mintEvent.event_timestamp) {
             mintTimestamp = mintEvent.event_timestamp;
           }
-        } catch {}
+        } catch (err) {
+          console.warn(`Failed to fetch events for ${item.contract}/${item.tokenId}`, err);
+        }
         await delay(1000);
 
         let collectionDetail = null;
@@ -1665,11 +1661,15 @@
                 const rp = await fetchOpenSea(`/accounts/resolve/${encodeURIComponent(addr)}`);
                 const ra = rp?.account || rp || {};
                 name = norm(ra.username || ra.ens_name || ra.display_name || ra.name || '');
-              } catch {}
+              } catch (err) {
+                console.warn(`Failed to resolve ENS for ${addr}`, err);
+              }
               await delay(1000);
             }
             if (name) nameMap.set(addr.toLowerCase(), name);
-          } catch {}
+          } catch (err) {
+            console.warn(`Failed to fetch account detail for ${addr}`, err);
+          }
         }
         for (const item of chunk) {
           if (!item.creatorAddress) continue;
@@ -1722,6 +1722,13 @@
         deduped.push(item);
       }
       appendLog(`Loaded ${deduped.length} OpenSea entries (${owned.length} owned).`, 'good');
+
+      // Process the first 10 immediately so the UI populates quickly
+      const initialChunk = deduped.slice(0, 10);
+      if (initialChunk.length) {
+        appendLog(`Enriching metadata for the first ${initialChunk.length} items…`);
+        await processEnrichmentChunk(initialChunk);
+      }
 
       return deduped;
     }
@@ -1990,7 +1997,6 @@
           while ((m = OPENSEA_URL_RE.exec(text)) !== null) S.processedTokenUrls.add(m[0].toLowerCase());
         });
         buildComparisonRows();
-
         // Only enrich items that have not yet been archived.
         const unarchivedItems = openSeaItems.filter(item => {
           const rowKey = item.cid || (item.tokenUrl ? `src:${item.tokenUrl}` : null);
@@ -2403,113 +2409,10 @@
     $('analyzeBtn').addEventListener('click', analyze);
     $('startSyncBtn').addEventListener('click', startAutoSync);
     $('stopSyncBtn').addEventListener('click', stopAutoSync);
-    $('exportCsvBtn').addEventListener('click', () => {
-      const rows = S.comparisonRows || [];
-      const archivedRows = rows.filter(r => r.hasP2fk);
-      if (archivedRows.length === 0) {
-        appendLog('No archived items to export.', 'warn');
-        return;
-      }
-
-      const escapeCsv = (str) => {
-        if (!str) return '';
-        const s = String(str);
-        if (/[",\n\r]/.test(s)) {
-          return `"${s.replace(/"/g, '""')}"`;
-        }
-        return s;
-      };
-
-      const header = ['Title', 'OpenSea URL', 'OpenSea Source URL', 'IPFS Gateway URL', 'Sup!? URN', 'CID'];
-      const csvData = [header.join(',')];
-
-      archivedRows.forEach(row => {
-        const openSea = row.openSeaItems && row.openSeaItems[0] ? row.openSeaItems[0] : {};
-        const title = openSea.name || '';
-        const openseaUrl = openSea.tokenUrl || '';
-        const sourceUrl = openSea.sourceUrl || '';
-
-        let cid = row.cid || '';
-        let urn = row.urn || '';
-
-        // If we don't have cid/urn directly on row, try to extract from p2fkItems
-        if (!cid || !urn) {
-           const p2fk = row.p2fkItems && row.p2fkItems[0] ? row.p2fkItems[0] : null;
-           if (p2fk) {
-               cid = cid || p2fk.cid || '';
-               urn = urn || p2fk.urn || '';
-           }
-        }
-
-        const ipfsUrl = cid ? buildIpfsUrl(cid) : '';
-
-        const csvRow = [
-          title,
-          openseaUrl,
-          sourceUrl,
-          ipfsUrl,
-          urn,
-          cid
-        ].map(escapeCsv);
-
-        csvData.push(csvRow.join(','));
-      });
-
-      const blob = new Blob([csvData.join('\n')], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.setAttribute('download', 'opensea_archive.csv');
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    });
     $('generateOpenSeaKeyBtn').addEventListener('click', () => createOpenSeaInstantApiKey({ auto: false }).catch(err => {
       appendLog(err.message || 'OpenSea key generation failed.', 'bad');
       setStatus('analysisStatus', err.message || 'OpenSea key generation failed.', 'bad');
     }));
-
-    $('reAddBtn').addEventListener('click', async () => {
-      const urlStr = norm($('reAddInput').value);
-      if (!urlStr) {
-        appendLog('Please enter an OpenSea item URL to re-add to IPFS.', 'bad');
-        return;
-      }
-      setStatus('analysisStatus', 'Fetching OpenSea item for IPFS re-add...', 'info');
-      try {
-        let contract = '';
-        let tokenId = '';
-        const match = urlStr.match(/assets\/(?:ethereum\/)?(0x[a-fA-F0-9]{40})\/(\d+)/i);
-        if (match) {
-          contract = match[1];
-          tokenId = match[2];
-        } else {
-           throw new Error('Invalid OpenSea URL format. Could not extract contract and tokenId.');
-        }
-
-        const payload = await fetchOpenSea(`/chain/ethereum/contract/${encodeURIComponent(contract)}/nfts/${encodeURIComponent(tokenId)}`);
-        const detailToken = payload?.nft || payload?.token || payload || null;
-
-        if (!detailToken) {
-           throw new Error('Could not retrieve token details from OpenSea.');
-        }
-
-        const media = normalizeOpenSeaMedia(detailToken);
-        if (!media.sourceUrl) {
-           throw new Error('Could not find a valid sourceUrl for this item.');
-        }
-
-        setStatus('analysisStatus', `Uploading source content to IPFS...`, 'info');
-        const upload = await uploadToIpfsIngress(media.sourceUrl);
-        appendLog(`Successfully re-added item to IPFS. CID: ${upload.cid}`, 'good');
-        setStatus('analysisStatus', `Re-add complete. CID: ${upload.cid}`, 'good');
-
-      } catch (err) {
-        appendLog(`Re-add to IPFS failed: ${err.message}`, 'bad');
-        setStatus('analysisStatus', `Re-add failed: ${err.message}`, 'bad');
-      }
-    });
 
     setInterval(refreshConfirmationStates, 60000);
     setInterval(runOpenSeaKeyAutoRenew, OPEN_SEA_KEY_RENEW_CHECK_MS);
