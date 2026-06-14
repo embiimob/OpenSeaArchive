@@ -1582,72 +1582,69 @@
       const targets = items.filter(item => item?.contract && item?.tokenId);
       if (!targets.length) return;
       const collectionCache = new Map();
-      const CHUNK_SIZE = 5;
-      for (let i = 0; i < targets.length; i += CHUNK_SIZE) {
-        const chunk = targets.slice(i, i + CHUNK_SIZE);
-        await Promise.allSettled(chunk.map(async item => {
-          let detailToken = null;
-          try {
-            const payload = await fetchOpenSea(`/chain/ethereum/contract/${encodeURIComponent(item.contract)}/nfts/${encodeURIComponent(item.tokenId)}`);
-            detailToken = payload?.nft || payload?.token || payload || null;
-          } catch {}
 
-          let mintTimestamp = null;
-          try {
-            const eventsPayload = await fetchOpenSea(`/events/chain/ethereum/contract/${encodeURIComponent(item.contract)}/nfts/${encodeURIComponent(item.tokenId)}`, { event_type: 'transfer' });
-            const events = eventsPayload?.asset_events || [];
-            const mintEvent = events.find(e => e.transfer_type === 'mint' || e.from_address === '0x0000000000000000000000000000000000000000');
-            if (mintEvent && mintEvent.event_timestamp) {
-              mintTimestamp = mintEvent.event_timestamp;
+      for (const item of targets) {
+        let detailToken = null;
+        try {
+          const payload = await fetchOpenSea(`/chain/ethereum/contract/${encodeURIComponent(item.contract)}/nfts/${encodeURIComponent(item.tokenId)}`);
+          detailToken = payload?.nft || payload?.token || payload || null;
+        } catch {}
+        await delay(500);
+
+        let mintTimestamp = null;
+        try {
+          const eventsPayload = await fetchOpenSea(`/events/chain/ethereum/contract/${encodeURIComponent(item.contract)}/nfts/${encodeURIComponent(item.tokenId)}`, { event_type: 'transfer' });
+          const events = eventsPayload?.asset_events || [];
+          const mintEvent = events.find(e => e.transfer_type === 'mint' || e.from_address === '0x0000000000000000000000000000000000000000');
+          if (mintEvent && mintEvent.event_timestamp) {
+            mintTimestamp = mintEvent.event_timestamp;
+          }
+        } catch {}
+        await delay(500);
+
+        let collectionDetail = null;
+        // In OpenSea API v2, detailToken.collection is a plain slug string, not an object.
+        const rawTokenCollection = detailToken?.collection;
+        const collectionSlug = norm(
+          (typeof rawTokenCollection === 'string' ? rawTokenCollection : (rawTokenCollection?.slug || rawTokenCollection?.collection))
+          || item?.collectionSlug
+        );
+        if (collectionSlug) {
+          if (!collectionCache.has(collectionSlug)) {
+            try {
+              const payload = await fetchOpenSea(`/collections/${encodeURIComponent(collectionSlug)}`);
+              // In OpenSea API v2 the response IS the collection object (payload.collection is the slug string, not the object).
+              collectionCache.set(collectionSlug, (payload && typeof payload === 'object' && !Array.isArray(payload)) ? payload : null);
+            } catch (err) {
+              console.warn(`Failed to fetch collection detail for slug ${collectionSlug}`, err);
+              collectionCache.set(collectionSlug, null);
             }
-          } catch {}
-
-          let collectionDetail = null;
-          // In OpenSea API v2, detailToken.collection is a plain slug string, not an object.
-          const rawTokenCollection = detailToken?.collection;
-          const collectionSlug = norm(
-            (typeof rawTokenCollection === 'string' ? rawTokenCollection : (rawTokenCollection?.slug || rawTokenCollection?.collection))
-            || item?.collectionSlug
-          );
-          if (collectionSlug) {
-            if (!collectionCache.has(collectionSlug)) {
-              collectionCache.set(collectionSlug, (async () => {
-                try {
-                  const payload = await fetchOpenSea(`/collections/${encodeURIComponent(collectionSlug)}`);
-                  // In OpenSea API v2 the response IS the collection object (payload.collection is the slug string, not the object).
-                  return (payload && typeof payload === 'object' && !Array.isArray(payload)) ? payload : null;
-                } catch (err) {
-                  console.warn(`Failed to fetch collection detail for slug ${collectionSlug}`, err);
-                  return null;
-                }
-              })());
-            }
-            collectionDetail = await collectionCache.get(collectionSlug);
+            await delay(500);
           }
+          collectionDetail = collectionCache.get(collectionSlug);
+        }
 
-          const artistMeta = resolveOpenSeaArtistMeta(detailToken || {}, collectionDetail || null);
-          if (artistMeta.creatorAddress) item.creatorAddress = artistMeta.creatorAddress;
-          if (artistMeta.artistAlias && !ETH_ADDR_RE.test(artistMeta.artistAlias)) {
-            item.artistAlias = artistMeta.artistAlias;
-          }
+        const artistMeta = resolveOpenSeaArtistMeta(detailToken || {}, collectionDetail || null);
+        if (artistMeta.creatorAddress) item.creatorAddress = artistMeta.creatorAddress;
+        if (artistMeta.artistAlias && !ETH_ADDR_RE.test(artistMeta.artistAlias)) {
+          item.artistAlias = artistMeta.artistAlias;
+        }
 
-          const tokenUrl = norm(detailToken?.opensea_url || detailToken?.permalink || detailToken?.asset_url);
-          if (tokenUrl) item.tokenUrl = tokenUrl;
-          if (detailToken && typeof detailToken === 'object') {
-            const media = normalizeOpenSeaMedia(detailToken, item);
-            if (media.sourceUrl) item.sourceUrl = media.sourceUrl;
-            if (media.artifactUri) item.artifactUri = media.artifactUri;
-            if (media.displayUri) item.displayUri = media.displayUri;
-            if (media.thumbnailUri) item.thumbnailUri = media.thumbnailUri;
-            if (media.metadataUri) item.metadataUri = media.metadataUri;
-            if (media.mime) item.mime = media.mime;
-          }
+        const tokenUrl = norm(detailToken?.opensea_url || detailToken?.permalink || detailToken?.asset_url);
+        if (tokenUrl) item.tokenUrl = tokenUrl;
+        if (detailToken && typeof detailToken === 'object') {
+          const media = normalizeOpenSeaMedia(detailToken, item);
+          if (media.sourceUrl) item.sourceUrl = media.sourceUrl;
+          if (media.artifactUri) item.artifactUri = media.artifactUri;
+          if (media.displayUri) item.displayUri = media.displayUri;
+          if (media.thumbnailUri) item.thumbnailUri = media.thumbnailUri;
+          if (media.metadataUri) item.metadataUri = media.metadataUri;
+          if (media.mime) item.mime = media.mime;
+        }
 
-          if (mintTimestamp) {
-             item.mintedDate = new Date(mintTimestamp * 1000).toISOString();
-          }
-        }));
-        await delay(2000); // Drastically slow down the rate of requests
+        if (mintTimestamp) {
+           item.mintedDate = new Date(mintTimestamp * 1000).toISOString();
+        }
       }
     }
 
@@ -1657,25 +1654,22 @@
       const uniqueCreators = [...new Set(chunk.map(item => item.creatorAddress).filter(a => ETH_ADDR_RE.test(a)))];
       if (uniqueCreators.length) {
         const nameMap = new Map();
-        const CHUNK_SIZE = 5;
-        for (let i = 0; i < uniqueCreators.length; i += CHUNK_SIZE) {
-          const uChunk = uniqueCreators.slice(i, i + CHUNK_SIZE);
-          await Promise.allSettled(uChunk.map(async addr => {
-            try {
-              const payload = await fetchOpenSea(`/accounts/${encodeURIComponent(addr)}`);
-              const account = payload?.account || payload || {};
-              let name = norm(account.username || account.display_name || account.name || '');
-              if (!name) {
-                try {
-                  const rp = await fetchOpenSea(`/accounts/resolve/${encodeURIComponent(addr)}`);
-                  const ra = rp?.account || rp || {};
-                  name = norm(ra.username || ra.ens_name || ra.display_name || ra.name || '');
-                } catch {}
-              }
-              if (name) nameMap.set(addr.toLowerCase(), name);
-            } catch {}
-          }));
-          await delay(2000); // Drastically slow down the rate of requests
+        for (const addr of uniqueCreators) {
+          try {
+            const payload = await fetchOpenSea(`/accounts/${encodeURIComponent(addr)}`);
+            const account = payload?.account || payload || {};
+            let name = norm(account.username || account.display_name || account.name || '');
+            await delay(500);
+            if (!name) {
+              try {
+                const rp = await fetchOpenSea(`/accounts/resolve/${encodeURIComponent(addr)}`);
+                const ra = rp?.account || rp || {};
+                name = norm(ra.username || ra.ens_name || ra.display_name || ra.name || '');
+              } catch {}
+              await delay(500);
+            }
+            if (name) nameMap.set(addr.toLowerCase(), name);
+          } catch {}
         }
         for (const item of chunk) {
           if (!item.creatorAddress) continue;
@@ -1996,10 +1990,6 @@
           while ((m = OPENSEA_URL_RE.exec(text)) !== null) S.processedTokenUrls.add(m[0].toLowerCase());
         });
         buildComparisonRows();
-        const queueInfo = queueUnmatched(MIN_SYNC_QUEUE_TARGET);
-        const ipfsCount = S.openSeaItems.filter(i => i.cid).length;
-        const nonIpfsCount = S.openSeaItems.filter(i => !i.cid).length;
-        setStatus('analysisStatus', `Analysis complete for #${keyword} and ${user.address}. Found ${ipfsCount} IPFS + ${nonIpfsCount} non-IPFS OpenSea items; ${S.p2fkItems.length} p2fk refs. Queue waiting total: ${queueInfo.pendingTotal} item(s). Background processing remaining items...`, 'good');
 
         // Only enrich items that have not yet been archived.
         const unarchivedItems = openSeaItems.filter(item => {
@@ -2021,6 +2011,11 @@
         } else {
           appendLog(`No unarchived items to enrich.`);
         }
+
+        const queueInfo = queueUnmatched(MIN_SYNC_QUEUE_TARGET);
+        const ipfsCount = S.openSeaItems.filter(i => i.cid).length;
+        const nonIpfsCount = S.openSeaItems.filter(i => !i.cid).length;
+        setStatus('analysisStatus', `Analysis complete for #${keyword} and ${user.address}. Found ${ipfsCount} IPFS + ${nonIpfsCount} non-IPFS OpenSea items; ${S.p2fkItems.length} p2fk refs. Queue waiting total: ${queueInfo.pendingTotal} item(s). Background processing remaining items...`, 'good');
       } catch (error) {
         appendLog(`Analysis failed: ${error.message}`, 'bad');
         setStatus('analysisStatus', error.message || 'Analysis failed.', 'bad');
