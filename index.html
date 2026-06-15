@@ -339,7 +339,7 @@
         <div class="field-row">
           <div class="field">
             <label for="reAddInput">OpenSea item URL</label>
-            <input id="reAddInput" placeholder="https://opensea.io/assets/ethereum/..." autocomplete="off" spellcheck="false">
+            <input id="reAddInput" placeholder="https://opensea.io/item/ethereum/..." autocomplete="off" spellcheck="false">
           </div>
         </div>
         <div class="btn-row">
@@ -1678,7 +1678,7 @@
           item.artistAlias = artistMeta.artistAlias;
         }
 
-        const tokenUrl = norm(detailToken?.opensea_url || detailToken?.permalink || detailToken?.asset_url);
+        const tokenUrl = normalizeOpenSeaUrl(norm(detailToken?.opensea_url || detailToken?.permalink || detailToken?.asset_url));
         if (tokenUrl) item.tokenUrl = tokenUrl;
         if (detailToken && typeof detailToken === 'object') {
           const media = normalizeOpenSeaMedia(detailToken, item);
@@ -1793,6 +1793,20 @@
       }
     }
 
+    function normalizeOpenSeaUrl(urlStr) {
+      if (!urlStr) return '';
+      let s = String(urlStr);
+      const match = s.match(/https?:\/\/(?:www\.)?opensea\.io\/(?:assets|item)\/([^/]+)\/(0x[a-fA-F0-9]{40})\/(\d+)/i);
+      if (match) {
+          return `https://opensea.io/item/${match[1].toLowerCase()}/${match[2].toLowerCase()}/${match[3]}`;
+      }
+      const matchNoChain = s.match(/https?:\/\/(?:www\.)?opensea\.io\/(?:assets|item)\/(0x[a-fA-F0-9]{40})\/(\d+)/i);
+      if (matchNoChain) {
+          return `https://opensea.io/item/ethereum/${matchNoChain[1].toLowerCase()}/${matchNoChain[2]}`;
+      }
+      return s;
+    }
+
     function normalizeOpenSeaMedia(token = {}, fallback = {}) {
       const metadataUri = norm(token?.metadata_url || token?.token_uri || fallback?.metadataUri || '');
       const sourceCandidates = [
@@ -1874,7 +1888,7 @@
         path: '',
         sourceUrl: media.sourceUrl,
         collectionSlug,
-        tokenUrl: openseaUrl || (contract && tokenId ? `https://opensea.io/assets/ethereum/${contract}/${tokenId}` : ''),
+        tokenUrl: normalizeOpenSeaUrl(openseaUrl || (contract && tokenId ? `https://opensea.io/item/ethereum/${contract}/${tokenId}` : '')),
         totalUnits: totalUnits,
         mintedDate: mintedDate,
       };
@@ -1963,7 +1977,7 @@
         row.sourceUrl ||= item.sourceUrl;
         row.openSeaItems.push(item);
         row.hasOpenSea = true;
-        row.hasP2fk = S.processedTokenUrls.has(item.tokenUrl.toLowerCase());
+        row.hasP2fk = S.processedTokenUrls.has(normalizeOpenSeaUrl(item.tokenUrl.toLowerCase()));
       });
       const rows = [...map.values()].sort((a, b) => {
         const aRank = a.hasOpenSea && !a.hasP2fk ? 0 : a.hasOpenSea && a.hasP2fk ? 1 : 2;
@@ -2039,7 +2053,7 @@
           // rawRoot.message keeps hidden <<...>> tokens while item.message is cleaned display text.
           const text = getSourceKeyScanText(item);
           let m;
-          while ((m = OPENSEA_URL_RE.exec(text)) !== null) S.processedTokenUrls.add(m[0].toLowerCase());
+          while ((m = OPENSEA_URL_RE.exec(text)) !== null) S.processedTokenUrls.add(normalizeOpenSeaUrl(m[0].toLowerCase()));
         });
         buildComparisonRows();
 
@@ -2264,7 +2278,7 @@
         appendLog(`Broadcasted ${rowKey} in tx ${txid}.`, 'good');
         // For non-IPFS items, immediately mark as processed locally.
         if (!row.cid && row.tokenUrl) {
-          S.processedTokenUrls.add(row.tokenUrl.toLowerCase());
+          S.processedTokenUrls.add(normalizeOpenSeaUrl(row.tokenUrl.toLowerCase()));
           row.hasP2fk = true;
         }
       } catch (error) {
@@ -2316,7 +2330,7 @@
           // rawRoot.message keeps hidden <<...>> tokens while item.message is cleaned display text.
           const text = getSourceKeyScanText(item);
           let m;
-          while ((m = OPENSEA_URL_RE.exec(text)) !== null) S.processedTokenUrls.add(m[0].toLowerCase());
+          while ((m = OPENSEA_URL_RE.exec(text)) !== null) S.processedTokenUrls.add(normalizeOpenSeaUrl(m[0].toLowerCase()));
         });
         buildComparisonRows();
 
@@ -2674,7 +2688,7 @@
 
         const outputs = await buildMsgOutputs({
           text: textToSync,
-          attachments: [attach.canonical, norm($('reAddInput').value)],
+          attachments: [attach.canonical, normalizeOpenSeaUrl(norm($('reAddInput').value))],
           extras: [],
           fromAddr: S.addr,
         });
