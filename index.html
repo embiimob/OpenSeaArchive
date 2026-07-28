@@ -454,8 +454,8 @@
     const QUEUE_DISPLAY_LIMIT = 10;
     const MIN_SYNC_QUEUE_TARGET = 10;
     const CONFIRMED_DISPLAY_LIMIT = 5;
-    const CHANGE_REUSE_MAX_FUNDED_TXO = 450;
-    const CHANGE_HARD_MAX_FUNDED_TXO = 500;
+    const CHANGE_REUSE_MAX_FUNDED_TXO = 450; // Reuse an existing change address only when its funded output count is at or below this threshold.
+    const CHANGE_HARD_MAX_FUNDED_TXO = 500; // Never send a new change output to an address above this funded output count.
     const MAX_CHANGE_KEYS = 200; // Deterministic cap for derivation space (slot-1 ... slot-200).
     const ONE_DAY_MS = 24 * 60 * 60 * 1000;
     const TEN_YEARS_MS = 10 * 365 * ONE_DAY_MS;
@@ -695,7 +695,7 @@
         <div class="wallet-line ${entry.unconfirmed > 0 ? 'unconfirmed-balance' : ''}">
           <div><strong>${esc(entry.label)}</strong></div>
           <code>${esc(entry.addr)}</code>
-          <div class="mini">Confirmed: ${esc(fmtTez(entry.confirmed))} · Unconfirmed incoming: ${esc(fmtTez(entry.unconfirmed))} · Funded outputs: ${esc(String(entry.funded_txo_count || 0))}</div>
+          <div class="mini">Confirmed: ${esc(fmtTez(entry.confirmed))} · Unconfirmed incoming: ${esc(fmtTez(entry.unconfirmed))} · Funded transaction outputs: ${esc(String(entry.funded_txo_count || 0))}</div>
           ${entry.isChange ? `<div class="btn-row"><button class="small-btn" data-export-change-wif="${esc(entry.addr)}">Export WIF</button></div>` : ''}
         </div>
       `).join('');
@@ -1172,6 +1172,7 @@
         entry.utxoCount = bal.utxo_count;
         entry.fundedTxoCount = bal.funded_txo_count;
         const isRetiredAddress = bal.confirmed <= 0 && bal.unconfirmed <= 0 && bal.funded_txo_count > CHANGE_REUSE_MAX_FUNDED_TXO;
+        // Hide exhausted high-churn change addresses so they are not selected again.
         if (!isRetiredAddress) changes.push(entry);
         if (i >= 1 && bal.tx_count === 0) break;
       }
@@ -1179,8 +1180,15 @@
       return { main, changes, all: [main, ...changes], nextChangeSlot };
     }
 
+    function getKeyringNextChangeSlot(kr) {
+      const maxKnownSlot = (kr.changes || []).reduce((max, item) => Math.max(max, Number(item?.changeSlot || 0)), 0);
+      const fromState = Number(kr.nextChangeSlot || 0);
+      const baseSlot = Math.max(fromState, maxKnownSlot + 1, 1);
+      return baseSlot;
+    }
+
     async function deriveAndAddChangeAddress(kr) {
-      const slot = Number(kr.nextChangeSlot || (kr.changes.length + 1));
+      const slot = getKeyringNextChangeSlot(kr);
       if (slot > MAX_CHANGE_KEYS) return null;
       const d = await deriveChangeKey(kr.main.pb, `slot-${slot}`);
       const newChange = await buildSignerEntry(d, `change-${slot}`);
@@ -1351,7 +1359,7 @@
             .filter(c => (fundedTxoCountByAddr.get(c.addr) || 0) <= CHANGE_HARD_MAX_FUNDED_TXO)
             .sort((a, b) => (fundedTxoCountByAddr.get(a.addr) || 0) - (fundedTxoCountByAddr.get(b.addr) || 0));
           if (!validChanges.length) {
-            throw new Error(`No change address available at or below ${CHANGE_HARD_MAX_FUNDED_TXO} funded outputs.`);
+            throw new Error(`No change address available at or below ${CHANGE_HARD_MAX_FUNDED_TXO} funded outputs. Please consolidate change outputs first.`);
           }
         }
       }
@@ -1374,7 +1382,7 @@
       if (!S.keyring) S.keyring = kr;
 
       const allUtxos = [];
-      const validChanges = [];
+      let validChanges = [];
 
       await Promise.all(kr.all.map(async sg => {
         const bal = await getBalance(sg.addr).catch(() => ({ confirmed: 0, unconfirmed: 0, utxo_count: 0, funded_txo_count: 0 }));
@@ -1411,9 +1419,10 @@
         }
       }
 
-      validChanges = validChanges.filter(item => (item.fundedTxoCount || 0) <= CHANGE_HARD_MAX_FUNDED_TXO);
-      if (!validChanges.length) throw new Error(`No change address available at or below ${CHANGE_HARD_MAX_FUNDED_TXO} funded outputs.`);
-      validChanges.sort((a, b) => (a.fundedTxoCount || 0) - (b.fundedTxoCount || 0));
+      validChanges = validChanges
+        .filter(item => (item.fundedTxoCount || 0) <= CHANGE_HARD_MAX_FUNDED_TXO)
+        .sort((a, b) => (a.fundedTxoCount || 0) - (b.fundedTxoCount || 0));
+      if (!validChanges.length) throw new Error(`No change address available at or below ${CHANGE_HARD_MAX_FUNDED_TXO} funded outputs. Please consolidate change outputs first.`);
       const targetChange = validChanges[0];
 
       const feeRate = await getCachedFeeRate();
