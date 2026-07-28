@@ -456,7 +456,7 @@
     const CONFIRMED_DISPLAY_LIMIT = 5;
     const CHANGE_REUSE_MAX_FUNDED_TXO = 450;
     const CHANGE_HARD_MAX_FUNDED_TXO = 500;
-    const MAX_CHANGE_KEYS = 200;
+    const MAX_CHANGE_KEYS = 200; // Deterministic cap for derivation space (slot-1 ... slot-200).
     const ONE_DAY_MS = 24 * 60 * 60 * 1000;
     const TEN_YEARS_MS = 10 * 365 * ONE_DAY_MS;
 
@@ -1171,11 +1171,12 @@
         const bal = await getBalance(entry.addr).catch(() => ({ confirmed: 0, unconfirmed: 0, tx_count: 0, utxo_count: 0, funded_txo_count: 0 }));
         entry.utxoCount = bal.utxo_count;
         entry.fundedTxoCount = bal.funded_txo_count;
-        const retireFromDisplay = bal.confirmed <= 0 && bal.unconfirmed <= 0 && bal.funded_txo_count > CHANGE_REUSE_MAX_FUNDED_TXO;
-        if (!retireFromDisplay) changes.push(entry);
+        const isRetiredAddress = bal.confirmed <= 0 && bal.unconfirmed <= 0 && bal.funded_txo_count > CHANGE_REUSE_MAX_FUNDED_TXO;
+        if (!isRetiredAddress) changes.push(entry);
         if (i >= 1 && bal.tx_count === 0) break;
       }
-      return { main, changes, all: [main, ...changes], nextChangeSlot: Math.min(lastScannedSlot + 1, MAX_CHANGE_KEYS + 1) };
+      const nextChangeSlot = lastScannedSlot >= MAX_CHANGE_KEYS ? MAX_CHANGE_KEYS + 1 : (lastScannedSlot + 1);
+      return { main, changes, all: [main, ...changes], nextChangeSlot };
     }
 
     async function deriveAndAddChangeAddress(kr) {
