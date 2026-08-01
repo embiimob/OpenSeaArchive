@@ -152,6 +152,10 @@
       border-radius: 12px;
       padding: 12px;
     }
+    .wallet-line.unconfirmed-balance {
+      border-color: rgba(244,183,64,.75);
+      box-shadow: inset 0 0 0 1px rgba(244,183,64,.25);
+    }
     .wallet-line code, .summary-item strong { display: block; }
     code {
       color: #d7e3ff;
@@ -450,6 +454,9 @@
     const QUEUE_DISPLAY_LIMIT = 10;
     const MIN_SYNC_QUEUE_TARGET = 10;
     const CONFIRMED_DISPLAY_LIMIT = 5;
+    const CHANGE_REUSE_MAX_FUNDED_TXO = 450; // Reuse an existing change address only when its funded output count is at or below this threshold.
+    const CHANGE_HARD_MAX_FUNDED_TXO = 500; // Never send a new change output to an address above this funded output count.
+    const MAX_CHANGE_KEYS = 200; // Deterministic cap for derivation space (slot-1 ... slot-200).
     const ONE_DAY_MS = 24 * 60 * 60 * 1000;
     const TEN_YEARS_MS = 10 * 365 * ONE_DAY_MS;
 
@@ -457,7 +464,6 @@
       priv: null,
       addr: '',
       keyring: null,
-      lastChangeOutputAddr: '',
       kwCache: new Map(),
       keywordAddress: '',
       keyword: '',
@@ -686,12 +692,28 @@
         return;
       }
       box.innerHTML = entries.map(entry => `
-        <div class="wallet-line">
+        <div class="wallet-line ${entry.unconfirmed > 0 ? 'unconfirmed-balance' : ''}">
           <div><strong>${esc(entry.label)}</strong></div>
           <code>${esc(entry.addr)}</code>
-          <div class="mini">Confirmed: ${esc(fmtTez(entry.confirmed))} · Unconfirmed incoming: ${esc(fmtTez(entry.unconfirmed))}</div>
+          <div class="mini">Confirmed: ${esc(fmtTez(entry.confirmed))} · Unconfirmed incoming: ${esc(fmtTez(entry.unconfirmed))} · Funded transaction outputs: ${esc(String(entry.funded_txo_count || 0))}</div>
+          ${entry.isChange ? `<div class="btn-row"><button class="small-btn" data-export-change-wif="${esc(entry.addr)}">Export WIF</button></div>` : ''}
         </div>
       `).join('');
+      box.querySelectorAll('[data-export-change-wif]').forEach(btn => btn.addEventListener('click', () => exportChangeWif(btn.dataset.exportChangeWif)));
+    }
+
+    async function exportChangeWif(addr) {
+      if (!S.keyring) throw new Error('Wallet is locked');
+      const signer = (S.keyring.changes || []).find(item => item.addr === addr);
+      if (!signer) throw new Error('Change address not found');
+      const wif = await priv2wif(signer.pb);
+      try {
+        await navigator.clipboard.writeText(wif);
+        setStatus('walletStatus', `Copied WIF for ${signer.label} (${signer.addr}) to clipboard.`, 'good');
+        appendLog(`Copied WIF for ${signer.label} (${shortAddr(signer.addr)}).`, 'good');
+      } catch {
+        window.prompt(`WIF for ${signer.label}`, wif);
+      }
     }
 
     function buildIpfsUrl(cid, path = '') {
@@ -964,6 +986,8 @@
 
       const confirmedAvailable = (Number(cs.funded_txo_sum || 0) - Number(cs.spent_txo_sum || 0)) - Number(ms.spent_txo_sum || 0);
       const unconfirmedIncoming = Number(ms.funded_txo_sum || 0);
+      const funded_txo_count = Number(cs.funded_txo_count || 0) + Number(ms.funded_txo_count || 0);
+      const mempoolSpent = Number(ms.spent_txo_sum || 0);
 
       const tx_count = Number(cs.tx_count || 0) + Number(ms.tx_count || 0);
       const utxo_count = (Number(cs.funded_txo_count || 0) - Number(cs.spent_txo_count || 0)) + (Number(ms.funded_txo_count || 0) - Number(ms.spent_txo_count || 0));
@@ -971,6 +995,8 @@
       return {
         confirmed: confirmedAvailable,
         unconfirmed: unconfirmedIncoming,
+        mempoolSpent,
+        funded_txo_count,
         tx_count,
         utxo_count
       };
@@ -1101,6 +1127,10 @@
       if (p.length === 33) return p.slice(1);
       throw new Error('Unexpected WIF length');
     }
+    async function priv2wif(pb) {
+      if (!(pb instanceof Uint8Array) || pb.length !== 32) throw new Error('Invalid private key length');
+      return encB58C(new Uint8Array([0xef, ...pb, 0x01]));
+    }
     async function priv2addr(pb) {
       const pub = priv2pub(pb), h = ripemd160(await sha256(pub));
       return encB58C(new Uint8Array([P2FK_VER, ...h]));
@@ -1131,15 +1161,44 @@
     async function buildKeyring(base) {
       const main = await buildSignerEntry(base, 'main');
       const changes = [];
-      for (let i = 0; i < 200; i++) {
+      let lastScannedSlot = 0;
+      for (let i = 0; i < MAX_CHANGE_KEYS; i++) {
+        const slot = i + 1;
+        lastScannedSlot = slot;
         const d = await deriveChangeKey(base, `slot-${i + 1}`);
-        const entry = await buildSignerEntry(d, `change-${i + 1}`);
-        const bal = await getBalance(entry.addr).catch(() => ({ confirmed: 0, unconfirmed: 0, tx_count: 0, utxo_count: 0 }));
+        const entry = await buildSignerEntry(d, `change-${slot}`);
+        entry.changeSlot = slot;
+        const bal = await getBalance(entry.addr).catch(() => ({ confirmed: 0, unconfirmed: 0, tx_count: 0, utxo_count: 0, funded_txo_count: 0 }));
         entry.utxoCount = bal.utxo_count;
-        changes.push(entry);
+        entry.fundedTxoCount = bal.funded_txo_count;
+        const isRetiredAddress = bal.confirmed <= 0 && bal.unconfirmed <= 0 && bal.funded_txo_count > CHANGE_REUSE_MAX_FUNDED_TXO;
+        // Hide exhausted high-churn change addresses so they are not selected again.
+        if (!isRetiredAddress) changes.push(entry);
         if (i >= 1 && bal.tx_count === 0) break;
       }
-      return { main, changes, all: [main, ...changes] };
+      const nextChangeSlot = lastScannedSlot >= MAX_CHANGE_KEYS ? MAX_CHANGE_KEYS + 1 : (lastScannedSlot + 1);
+      return { main, changes, all: [main, ...changes], nextChangeSlot };
+    }
+
+    function getKeyringNextChangeSlot(kr) {
+      const maxKnownSlot = (kr.changes || []).reduce((max, item) => Math.max(max, Number(item?.changeSlot || 0)), 0);
+      const fromState = Number(kr.nextChangeSlot || 0);
+      const baseSlot = Math.max(fromState, maxKnownSlot + 1, 1);
+      return baseSlot;
+    }
+
+    async function deriveAndAddChangeAddress(kr) {
+      const slot = getKeyringNextChangeSlot(kr);
+      if (slot > MAX_CHANGE_KEYS) return null;
+      const d = await deriveChangeKey(kr.main.pb, `slot-${slot}`);
+      const newChange = await buildSignerEntry(d, `change-${slot}`);
+      newChange.changeSlot = slot;
+      newChange.utxoCount = 0;
+      newChange.fundedTxoCount = 0;
+      kr.changes.push(newChange);
+      kr.all.push(newChange);
+      kr.nextChangeSlot = slot + 1;
+      return newChange;
     }
     function serializeTx(inputs, outputs, sigIdx = -1, sigScript = null) {
       const u32 = v => [v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >>> 24) & 0xff];
@@ -1200,12 +1259,13 @@
 
       // 1. Fetch balances to find candidate addresses
       const totByAddr = new Map();
-      const utxoCountByAddr = new Map();
+      const fundedTxoCountByAddr = new Map();
       const balancePromises = kr.all.map(async sg => {
-        const bal = await getBalance(sg.addr).catch(() => ({ confirmed: 0, unconfirmed: 0, utxo_count: 0 }));
+        const bal = await getBalance(sg.addr).catch(() => ({ confirmed: 0, unconfirmed: 0, utxo_count: 0, funded_txo_count: 0 }));
         totByAddr.set(sg.addr, bal.confirmed);
-        utxoCountByAddr.set(sg.addr, bal.utxo_count);
+        fundedTxoCountByAddr.set(sg.addr, bal.funded_txo_count);
         sg.utxoCount = bal.utxo_count;
+        sg.fundedTxoCount = bal.funded_txo_count;
       });
       await Promise.all(balancePromises);
 
@@ -1285,36 +1345,29 @@
       const change = selTotal - totalOut - fee;
       if (change < 0) throw new Error('Insufficient balance after fee');
 
-      // Pick a change address: alternate among valid change addresses based on input used
-      let validChanges = kr.changes.filter(c => utxoCountByAddr.get(c.addr) < 420);
+      let validChanges = kr.changes
+        .filter(c => (fundedTxoCountByAddr.get(c.addr) || 0) <= CHANGE_REUSE_MAX_FUNDED_TXO)
+        .sort((a, b) => (fundedTxoCountByAddr.get(a.addr) || 0) - (fundedTxoCountByAddr.get(b.addr) || 0));
 
       if (validChanges.length === 0) {
-        const nextIdx = kr.changes.length;
-        if (nextIdx < 200) {
-          const d = await deriveChangeKey(kr.main.pb, `slot-${nextIdx + 1}`);
-          const newChange = await buildSignerEntry(d, `change-${nextIdx + 1}`);
-          newChange.utxoCount = 0;
-          kr.changes.push(newChange);
-          kr.all.push(newChange);
-          validChanges.push(newChange);
+        const newChange = await deriveAndAddChangeAddress(kr);
+        if (newChange) {
+          fundedTxoCountByAddr.set(newChange.addr, 0);
+          validChanges = [newChange];
         } else {
-          throw new Error('All 200 change addresses have >= 420 UTXOs. Cannot create more change outputs.');
-        }
-      }
-
-      let changeAddr = validChanges[0].addr;
-      if (validChanges.length > 1) {
-        const lastIdx = validChanges.findIndex(c => c.addr === S.lastChangeOutputAddr);
-        if (lastIdx >= 0) {
-          changeAddr = validChanges[(lastIdx + 1) % validChanges.length].addr;
-        } else if (sel) {
-          const selIdx = validChanges.findIndex(c => c.addr === sel.addr);
-          if (selIdx >= 0) {
-            changeAddr = validChanges[(selIdx + 1) % validChanges.length].addr;
+          validChanges = kr.changes
+            .filter(c => (fundedTxoCountByAddr.get(c.addr) || 0) <= CHANGE_HARD_MAX_FUNDED_TXO)
+            .sort((a, b) => (fundedTxoCountByAddr.get(a.addr) || 0) - (fundedTxoCountByAddr.get(b.addr) || 0));
+          if (!validChanges.length) {
+            throw new Error(`No change address available at or below ${CHANGE_HARD_MAX_FUNDED_TXO} funded outputs. Please consolidate change outputs first.`);
           }
         }
       }
-      S.lastChangeOutputAddr = changeAddr;
+
+      const changeAddr = validChanges[0].addr;
+      if ((fundedTxoCountByAddr.get(changeAddr) || 0) > CHANGE_HARD_MAX_FUNDED_TXO) {
+        throw new Error(`Cannot send change to an address above ${CHANGE_HARD_MAX_FUNDED_TXO} funded outputs.`);
+      }
       const finalOuts = [...outSats];
       if (change >= DUST) finalOuts.push({ addr: changeAddr, sat: change });
       const rawHex = await buildTx(selUtxos, finalOuts);
@@ -1329,13 +1382,14 @@
       if (!S.keyring) S.keyring = kr;
 
       const allUtxos = [];
-      const validChanges = [];
+      let validChanges = [];
 
       await Promise.all(kr.all.map(async sg => {
-        const bal = await getBalance(sg.addr).catch(() => ({ confirmed: 0, unconfirmed: 0, utxo_count: 0 }));
+        const bal = await getBalance(sg.addr).catch(() => ({ confirmed: 0, unconfirmed: 0, utxo_count: 0, funded_txo_count: 0 }));
         if (kr.changes.includes(sg)) {
           sg.utxoCount = bal.utxo_count;
-          if (sg.utxoCount < 420) {
+          sg.fundedTxoCount = bal.funded_txo_count;
+          if (sg.fundedTxoCount <= CHANGE_REUSE_MAX_FUNDED_TXO) {
             validChanges.push(sg);
           }
         }
@@ -1352,20 +1406,23 @@
       if (!allUtxos.length) throw new Error('No confirmed funds to consolidate');
 
       if (validChanges.length === 0) {
-        const nextIdx = kr.changes.length;
-        if (nextIdx < 200) {
-          const d = await deriveChangeKey(kr.main.pb, `slot-${nextIdx + 1}`);
-          const newChange = await buildSignerEntry(d, `change-${nextIdx + 1}`);
-          newChange.utxoCount = 0;
-          kr.changes.push(newChange);
-          kr.all.push(newChange);
+        const newChange = await deriveAndAddChangeAddress(kr);
+        if (newChange) {
+          newChange.fundedTxoCount = 0;
           validChanges.push(newChange);
         } else {
-          throw new Error('No valid change addresses to consolidate to');
+          const fallbackChanges = (kr.changes || [])
+            .filter(item => (item.fundedTxoCount || 0) <= CHANGE_HARD_MAX_FUNDED_TXO)
+            .sort((a, b) => (a.fundedTxoCount || 0) - (b.fundedTxoCount || 0));
+          if (!fallbackChanges.length) throw new Error(`No change address available at or below ${CHANGE_HARD_MAX_FUNDED_TXO} funded outputs.`);
+          validChanges.push(fallbackChanges[0]);
         }
       }
 
-      validChanges.sort((a, b) => a.utxoCount - b.utxoCount);
+      validChanges = validChanges
+        .filter(item => (item.fundedTxoCount || 0) <= CHANGE_HARD_MAX_FUNDED_TXO)
+        .sort((a, b) => (a.fundedTxoCount || 0) - (b.fundedTxoCount || 0));
+      if (!validChanges.length) throw new Error(`No change address available at or below ${CHANGE_HARD_MAX_FUNDED_TXO} funded outputs. Please consolidate change outputs first.`);
       const targetChange = validChanges[0];
 
       const feeRate = await getCachedFeeRate();
@@ -1994,7 +2051,12 @@
         renderWalletInfo([]);
         return;
       }
-      const entries = await Promise.all(S.keyring.all.map(async signer => ({ label: signer.label, addr: signer.addr, ...(await getBalance(signer.addr)) })));
+      const entries = await Promise.all(S.keyring.all.map(async signer => ({
+        label: signer.label,
+        addr: signer.addr,
+        isChange: signer.label.startsWith('change-'),
+        ...(await getBalance(signer.addr))
+      })));
       renderWalletInfo(entries);
       const totalConfirmed = entries.reduce((sum, item) => sum + item.confirmed, 0);
       setStatus('walletStatus', `Wallet unlocked as ${S.addr}. Confirmed available across main + change addresses: ${fmtTez(totalConfirmed)}.`, 'good');
@@ -2122,20 +2184,6 @@
       row.sizeBytes = size;
       if (size != null) setSyncState(row.rowKey, { sizeBytes: size });
       return size;
-    }
-
-    async function hasPendingWalletActivity() {
-      if (!S.keyring) return false;
-      const balances = await Promise.all(S.keyring.all.map(signer => getBalance(signer.addr)));
-      return balances.some(item => item.unconfirmed > 0 || item.mempoolSpent > 0);
-    }
-
-    async function isLastBroadcastConfirmed() {
-      if (!S.lastBroadcastTxid) return true;
-      const res = await fetch(`${getMempoolApi()}/tx/${encodeURIComponent(S.lastBroadcastTxid)}/status`);
-      if (!res.ok) return false;
-      const payload = await res.json();
-      return Boolean(payload?.confirmed);
     }
 
     function buildSyncHiddenRefs(row) {
@@ -2398,14 +2446,6 @@
       S.syncBusy = true;
       try {
         if (!S.keyring) throw new Error('Unlock the wallet before auto sync.');
-        if (await hasPendingWalletActivity()) {
-          appendLog('Waiting for wallet balances to confirm before syncing the next item…', 'warn');
-          return;
-        }
-        if (!(await isLastBroadcastConfirmed())) {
-          appendLog(`Waiting for tx ${S.lastBroadcastTxid} to confirm before syncing the next item…`, 'warn');
-          return;
-        }
         const nextRowKey = S.syncQueue.shift();
         if (!nextRowKey) return;
         await syncRow(nextRowKey);
