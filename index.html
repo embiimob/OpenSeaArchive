@@ -245,6 +245,10 @@
           <label for="wifInput">SupSpace WIF</label>
           <input id="wifInput" type="password" placeholder="c... / 9... testnet3 legacy WIF" autocomplete="off" spellcheck="false">
         </div>
+        <div class="field">
+          <label for="feeRateInput">Min fee rate (sat/vbyte)</label>
+          <input id="feeRateInput" type="number" min="1" step="1" value="2" style="max-width:120px" autocomplete="off">
+        </div>
         <div class="btn-row">
           <button id="unlockBtn" class="primary">Unlock wallet</button>
           <button id="refreshWalletBtn">Refresh balances</button>
@@ -1228,9 +1232,13 @@
       }
       return b2h(serializeTx(inputs, finalOuts));
     }
+    function getUserFeeRate() {
+      const v = parseInt(norm($('feeRateInput')?.value), 10);
+      return Number.isFinite(v) && v >= FEE_MIN ? v : FEE_MIN;
+    }
     async function getCachedFeeRate() {
       const now = Date.now();
-      if (S.feeRateCache !== null && (now - S.feeRateCachedAt) < FEE_CACHE_TTL) return S.feeRateCache;
+      if (S.feeRateCache !== null && (now - S.feeRateCachedAt) < FEE_CACHE_TTL) return Math.max(S.feeRateCache, getUserFeeRate());
       try {
         const fr = await fetch(`${getMempoolApi()}/v1/fees/recommended`);
         const fp = await fr.json();
@@ -1239,7 +1247,7 @@
       } catch {
         if (S.feeRateCache === null) S.feeRateCache = FEE_DEFAULT;
       }
-      return S.feeRateCache;
+      return Math.max(S.feeRateCache, getUserFeeRate());
     }
     async function fetchSignerUtxos(sg) {
       const res = await fetch(`${getMempoolApi()}/address/${encodeURIComponent(sg.addr)}/utxo`);
@@ -2275,6 +2283,12 @@
       return { cid, mime: detectedMime, size: blob.size };
     }
 
+    async function hasPendingWalletActivity() {
+      if (!S.keyring) return false;
+      const balances = await Promise.all(S.keyring.all.map(signer => getBalance(signer.addr)));
+      return balances.some(item => item.unconfirmed > 0 || item.mempoolSpent > 0);
+    }
+
     async function syncRow(rowKey) {
       const row = (S.comparisonRows || []).find(item => item.rowKey === rowKey);
       if (!row || !row.hasOpenSea || row.hasP2fk) return;
@@ -2332,6 +2346,7 @@
       } catch (error) {
         appendLog(`Sync failed for ${rowKey}: ${error.message}`, 'bad');
         setSyncState(rowKey, { status: 'failed', error: error.message || 'Sync failed' });
+        if (/insufficient funds|insufficient balance|no confirmed funds/i.test(error.message)) throw error;
       }
     }
 
@@ -2444,9 +2459,24 @@
         return;
       }
       S.syncBusy = true;
+      let nextRowKey;
       try {
         if (!S.keyring) throw new Error('Unlock the wallet before auto sync.');
-        const nextRowKey = S.syncQueue.shift();
+
+        // Before attempting to broadcast, check whether any change address has unconfirmed
+        // incoming funds but zero confirmed balance.  If so, skip this tick and wait for
+        // the pending confirmation rather than attempting (and failing) a broadcast.
+        const changeBalances = await Promise.all(
+          S.keyring.changes.map(sg => getBalance(sg.addr).catch(() => ({ confirmed: 0, unconfirmed: 0 })))
+        );
+        const totalChangeConfirmed = changeBalances.reduce((s, b) => s + (b.confirmed || 0), 0);
+        const totalChangeUnconfirmed = changeBalances.reduce((s, b) => s + (b.unconfirmed || 0), 0);
+        if (totalChangeConfirmed === 0 && totalChangeUnconfirmed > 0) {
+          appendLog('Change address has unconfirmed incoming funds. Waiting for confirmation before next sync attempt.', 'warn');
+          return;
+        }
+
+        nextRowKey = S.syncQueue.shift();
         if (!nextRowKey) return;
         await syncRow(nextRowKey);
         const state = getSyncState(nextRowKey);
@@ -2454,7 +2484,26 @@
           appendLog('Next auto sync attempt will run after confirmation polling.', 'warn');
         }
       } catch (error) {
-        appendLog(`Auto sync error: ${error.message}`, 'bad');
+        if (/insufficient funds|insufficient balance|no confirmed funds/i.test(error.message)) {
+          if (nextRowKey) {
+            S.syncQueue.unshift(nextRowKey);
+            setSyncState(nextRowKey, { status: 'queued', queueRank: 0 });
+          }
+          // Only pause the timer when all change addresses have confirmed and there are
+          // genuinely no funds.  If any address still has pending unconfirmed activity,
+          // just wait for the next tick instead of stopping auto-sync entirely.
+          const hasPending = await hasPendingWalletActivity().catch(() => false);
+          if (hasPending) {
+            appendLog(`Insufficient confirmed funds; a change address is still pending confirmation. Will retry on next sync cycle.`, 'warn');
+          } else {
+            S.syncRunning = false;
+            if (S.syncTimer) { clearInterval(S.syncTimer); S.syncTimer = null; }
+            appendLog(`Auto sync paused: ${error.message}. Fund your wallet and restart auto sync.`, 'bad');
+            setStatus('analysisStatus', 'Auto sync paused: insufficient funds. Fund your wallet and restart.', 'bad');
+          }
+        } else {
+          appendLog(`Auto sync error: ${error.message}`, 'bad');
+        }
       } finally {
         queueUnmatched(MIN_SYNC_QUEUE_TARGET);
         S.syncBusy = false;
@@ -2514,6 +2563,7 @@
     $('consolidateBtn').addEventListener('click', window.consolidateChange);
     $('consolidateMsgBtn').addEventListener('click', window.consolidateForMessaging);
     $('clearWalletBtn').addEventListener('click', clearWallet);
+    $('feeRateInput').addEventListener('change', () => { S.feeRateCache = null; S.feeRateCachedAt = 0; });
     $('analyzeBtn').addEventListener('click', analyze);
     $('startSyncBtn').addEventListener('click', startAutoSync);
     $('stopSyncBtn').addEventListener('click', stopAutoSync);
