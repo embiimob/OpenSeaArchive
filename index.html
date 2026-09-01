@@ -275,7 +275,7 @@
           </div>
           <div class="field">
             <label for="gatewayInput">Preferred IPFS gateway for size checks</label>
-            <input id="gatewayInput" value="https://ipfs.io/ipfs/" autocomplete="off" spellcheck="false">
+            <input id="gatewayInput" value="https://ipfs.filebase.io/ipfs/" autocomplete="off" spellcheck="false">
           </div>
         </div>
         <div class="field">
@@ -535,7 +535,7 @@
     function getOpenSeaApi() { return norm($('openSeaInput').value) || 'https://api.opensea.io/api/v2'; }
     function getOpenSeaApiKey() { return norm($('openSeaApiKeyInput').value); }
     function getGatewayBase() {
-      const raw = norm($('gatewayInput').value) || 'https://ipfs.io/ipfs/';
+      const raw = norm($('gatewayInput').value) || 'https://ipfs.filebase.io/ipfs/';
       return raw.endsWith('/') ? raw : `${raw}/`;
     }
     function getExtraKeywords() {
