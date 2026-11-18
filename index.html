@@ -2381,7 +2381,7 @@
         const ac2 = new AbortController();
         const id2 = setTimeout(() => ac2.abort(), timeout);
         try {
-          const res = await fetch(`${base}/api/v0/add`, {
+          const res = await fetch(`${base}/ipfs`, {
             method: 'POST',
             body: form,
             signal: ac2.signal,
