@@ -294,6 +294,7 @@
           <div class="field">
             <label for="mempoolInput">mempool API</label>
             <input id="mempoolInput" value="https://mempool.space/testnet/api" autocomplete="off" spellcheck="false">
+            <div id="mempoolWait" class="mini" role="status" hidden>Waiting for the mempool API request limit...</div>
           </div>
         </div>
         <div class="field">
@@ -449,6 +450,21 @@
     const ETH_ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
 
     const FEE_CACHE_TTL = 5 * 60 * 1000;
+    const MEMPOOL_PRIMARY = 'https://mempool.space/testnet/api';
+    const MEMPOOL_WINDOW_MS = 10_000;
+    const MEMPOOL_TIMEOUT_MS = 10_000;
+    const MEMPOOL_MAX_CALLS = 10;
+    const MEMPOOL_MAX_RATE_LIMIT_ATTEMPTS = 3;
+    const MEMPOOL_REGIONAL_APIS = [
+      ['va1', [201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214]],
+      ['sv1', [201, 202, 203, 205, 206]],
+      ['hnl', [201, 202, 203, 204]],
+      ['fra', [201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214]],
+      ['tk7', [201, 202, 203, 204, 205, 206]],
+      ['sg1', [201, 202, 203, 204]],
+    ].flatMap(([region, nodes]) => nodes.map(node =>
+      `https://node${node}.${region}.mempool.space/testnet/api`
+    ));
     const AUTO_SYNC_TICK_MS = 5 * 60 * 1000;
     const DIFF_RECHECK_MS = 60 * 60 * 1000;
     const OPEN_SEA_KEY_RENEW_CHECK_MS = 60 * 60 * 1000;
@@ -535,7 +551,7 @@
     }
 
     function getApiBase() { return norm($('apiBaseInput').value) || 'https://p2fk.io'; }
-    function getMempoolApi() { return norm($('mempoolInput').value) || 'https://mempool.space/testnet/api'; }
+    function getMempoolApi() { return norm($('mempoolInput').value).replace(/\/+$/, '') || MEMPOOL_PRIMARY; }
     function getOpenSeaApi() { return norm($('openSeaInput').value) || 'https://api.opensea.io/api/v2'; }
     function getOpenSeaApiKey() { return norm($('openSeaApiKeyInput').value); }
     function getGatewayBase() {
@@ -831,6 +847,131 @@
       }
     }
 
+    let mempoolPool;
+    let mempoolQueue = Promise.resolve();
+    const mempoolStarts = [];
+    let mempoolBackoffUntil = 0;
+
+    function queueMempoolAttempt(start) {
+      // Queue starts, not responses, so up to ten requests can run in parallel.
+      const ready = mempoolQueue.then(async () => {
+        const indicator = $('mempoolWait');
+        try {
+          for (;;) {
+            const now = performance.now();
+            while (mempoolStarts.length && now - mempoolStarts[0] >= MEMPOOL_WINDOW_MS) mempoolStarts.shift();
+            const nextStart = Math.max(mempoolBackoffUntil,
+              mempoolStarts.length >= MEMPOOL_MAX_CALLS ? mempoolStarts[0] + MEMPOOL_WINDOW_MS : now);
+            if (nextStart <= now) {
+              mempoolStarts.push(now);
+              return { result: start() };
+            }
+            indicator.hidden = false;
+            await sleep(Math.min(nextStart - now, 2_147_483_647));
+          }
+        } finally {
+          indicator.hidden = true;
+        }
+      });
+      mempoolQueue = ready.then(() => {}, () => {});
+      return ready.then(({ result }) => result);
+    }
+
+    async function fetchMempoolAttempt(url, options) {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), MEMPOOL_TIMEOUT_MS);
+      try {
+        const res = await fetch(url, { ...options, signal: ac.signal, cache: 'no-store', redirect: 'error' });
+        if (res.status === 429) {
+          const header = (res.headers.get('Retry-After') || '').trim();
+          const delay = /^\d+$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now();
+          const wait = Number.isFinite(delay) ? Math.max(MEMPOOL_WINDOW_MS, delay) : MEMPOOL_WINDOW_MS;
+          mempoolBackoffUntil = Math.max(mempoolBackoffUntil, performance.now() + wait);
+        }
+        if (res.status === 408 || res.status === 429 || res.status >= 500) {
+          if (res.body) void res.body.cancel().catch(() => ac.abort());
+          return { ok: false, status: res.status, text: '' };
+        }
+        return { ok: res.ok, status: res.status, text: await res.text() };
+      } catch (error) {
+        if (ac.signal.aborted) throw new Error(`Timed out after ${MEMPOOL_TIMEOUT_MS / 1000} seconds: ${url}`);
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    function getMempoolPool() {
+      const primary = getMempoolApi();
+      if (mempoolPool?.primary !== primary) {
+        mempoolPool = {
+          primary,
+          endpoints: unique([primary, MEMPOOL_PRIMARY, ...MEMPOOL_REGIONAL_APIS]),
+          preferred: 0,
+          pendingReads: new Map(),
+        };
+      }
+      return mempoolPool;
+    }
+
+    async function mempoolRequest(pool, path, options = {}, decode = JSON.parse) {
+      const { endpoints } = pool;
+      let endpoint, lastError;
+      const start = () => {
+        endpoint ??= pool.preferred;
+        return fetchMempoolAttempt(`${endpoints[endpoint]}${path}`, options);
+      };
+      for (let tried = 0; tried < endpoints.length; tried++) {
+        let res;
+        try {
+          for (let attempt = 0; attempt < MEMPOOL_MAX_RATE_LIMIT_ATTEMPTS; attempt++) {
+            res = undefined;
+            res = await queueMempoolAttempt(start);
+            if (res.status !== 429) break;
+          }
+          if (res.ok) return decode(res.text);
+        } catch (error) {
+          lastError = error;
+        }
+        if (res && !res.ok) {
+          lastError = new Error(`Mempool HTTP ${res.status} for ${path}${res.text ? `: ${res.text.trim()}` : ''}`);
+          lastError.status = res.status;
+          if (res.status !== 408 && res.status < 500) throw lastError;
+        }
+        const next = (endpoint + 1) % endpoints.length;
+        if (pool.preferred === endpoint) pool.preferred = next;
+        endpoint = next;
+      }
+      throw new Error(`All Mempool endpoints failed for ${path}: ${lastError.message}`, { cause: lastError });
+    }
+
+    function mempoolJson(path) {
+      const pool = getMempoolPool();
+      if (!pool.pendingReads.has(path)) {
+        pool.pendingReads.set(path, mempoolRequest(pool, path).finally(() => pool.pendingReads.delete(path)));
+      }
+      return pool.pendingReads.get(path);
+    }
+
+    async function broadcastMempoolTx(rawHex) {
+      try {
+        return await mempoolRequest(getMempoolPool(), '/tx', {
+          method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: rawHex,
+        }, text => {
+          const txid = text.trim();
+          if (!TXID_RE.test(txid)) throw new Error('Invalid Mempool broadcast response');
+          return txid;
+        });
+      } catch (error) {
+        // A timed-out POST may have reached the network before its response was lost.
+        if ((error.status === 400 || error.status === 409)
+            && /txn-already-in-mempool|txn-already-known|transaction already in block\s*chain/i.test(error.message)) {
+          return b2h((await sha256(await sha256(h2b(rawHex)))).reverse());
+        }
+        throw error;
+      }
+    }
+
     const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
     async function fetchOpenSea(path, params = {}, retries = 3, backoff = 1000) {
@@ -982,9 +1123,7 @@
     }
 
     async function getBalance(addr) {
-      const res = await fetch(`${getMempoolApi()}/address/${encodeURIComponent(addr)}`);
-      if (!res.ok) throw new Error(`Balance lookup failed ${res.status}`);
-      const payload = await res.json();
+      const payload = await mempoolJson(`/address/${encodeURIComponent(addr)}`);
       const cs = payload?.chain_stats || {};
       const ms = payload?.mempool_stats || {};
 
@@ -1240,8 +1379,7 @@
       const now = Date.now();
       if (S.feeRateCache !== null && (now - S.feeRateCachedAt) < FEE_CACHE_TTL) return Math.max(S.feeRateCache, getUserFeeRate());
       try {
-        const fr = await fetch(`${getMempoolApi()}/v1/fees/recommended`);
-        const fp = await fr.json();
+        const fp = await mempoolJson('/v1/fees/recommended');
         S.feeRateCache = Math.max(Number(fp?.halfHourFee || FEE_DEFAULT), FEE_MIN);
         S.feeRateCachedAt = now;
       } catch {
@@ -1250,9 +1388,7 @@
       return Math.max(S.feeRateCache, getUserFeeRate());
     }
     async function fetchSignerUtxos(sg) {
-      const res = await fetch(`${getMempoolApi()}/address/${encodeURIComponent(sg.addr)}/utxo`);
-      if (!res.ok) throw new Error(`UTXO fetch failed for ${sg.label}`);
-      const items = await res.json();
+      const items = await mempoolJson(`/address/${encodeURIComponent(sg.addr)}/utxo`);
       return items.filter(u => u.status?.confirmed).map(u => ({ ...u, srcAddr: sg.addr, signer: sg }));
     }
     async function broadcastTx(outputs) {
@@ -1287,10 +1423,7 @@
       // Helper to fetch utxos for a specific signer
       const fetchUtxosForSigner = async (sg) => {
         if (fetchedUtxos.has(sg.addr)) return fetchedUtxos.get(sg.addr);
-        const res = await fetch(`${getMempoolApi()}/address/${encodeURIComponent(sg.addr)}/utxo`);
-        if (!res.ok) throw new Error(`UTXO fetch failed for ${sg.label}`);
-        const items = await res.json();
-        const utxos = items.filter(u => u.status?.confirmed).map(u => ({ ...u, srcAddr: sg.addr, signer: sg }));
+        const utxos = await fetchSignerUtxos(sg);
         fetchedUtxos.set(sg.addr, utxos);
         return utxos;
       };
@@ -1379,9 +1512,7 @@
       const finalOuts = [...outSats];
       if (change >= DUST) finalOuts.push({ addr: changeAddr, sat: change });
       const rawHex = await buildTx(selUtxos, finalOuts);
-      const res = await fetch(`${getMempoolApi()}/tx`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: rawHex });
-      if (!res.ok) throw new Error(`Broadcast failed: ${await res.text()}`);
-      return (await res.text()).trim();
+      return broadcastMempoolTx(rawHex);
     }
 
     async function consolidateForMessagingFunds() {
@@ -1403,11 +1534,7 @@
         }
         if (bal.confirmed <= 0) return;
         try {
-          const r = await fetch(`${getMempoolApi()}/address/${encodeURIComponent(sg.addr)}/utxo`);
-          if (!r.ok) throw new Error(`UTXO fetch failed for ${sg.label}`);
-          const j = await r.json();
-          const utxos = j.filter(u => u.status?.confirmed).map(u => ({ ...u, srcAddr: sg.addr, signer: sg }));
-          allUtxos.push(...utxos);
+          allUtxos.push(...await fetchSignerUtxos(sg));
         } catch (e) {}
       }));
 
@@ -1440,9 +1567,7 @@
       if (send < DUST) throw new Error(`Consolidation output too small after fee (${send} sat)`);
 
       const rawHex = await buildTx(allUtxos, [{ addr: targetChange.addr, sat: send }]);
-      const res = await fetch(`${getMempoolApi()}/tx`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: rawHex });
-      if (!res.ok) throw new Error(`Consolidation broadcast failed: ${await res.text()}`);
-      return (await res.text()).trim();
+      return broadcastMempoolTx(rawHex);
     }
 
     window.consolidateForMessaging = async function() {
@@ -1466,10 +1591,7 @@
         const bal = await getBalance(sg.addr).catch(() => ({ confirmed: 0, unconfirmed: 0 }));
         if (bal.confirmed <= 0) return [];
         try {
-          const r = await fetch(`${getMempoolApi()}/address/${encodeURIComponent(sg.addr)}/utxo`);
-          if (!r.ok) throw new Error(`UTXO fetch failed for ${sg.label}`);
-          const j = await r.json();
-          return j.filter(u => u.status?.confirmed).map(u => ({ ...u, srcAddr: sg.addr, signer: sg }));
+          return await fetchSignerUtxos(sg);
         } catch (e) {
           return [];
         }
@@ -1482,9 +1604,7 @@
       const send = total - fee;
       if (send < DUST) throw new Error(`Consolidation output too small after fee (${send} sat)`);
       const rawHex = await buildTx(utxos, [{ addr: kr.main.addr, sat: send }]);
-      const res = await fetch(`${getMempoolApi()}/tx`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: rawHex });
-      if (!res.ok) throw new Error(`Consolidation broadcast failed: ${await res.text()}`);
-      return (await res.text()).trim();
+      return broadcastMempoolTx(rawHex);
     }
 
     window.consolidateChange = async function() {
@@ -2546,10 +2666,9 @@
         const state = getSyncState(row.rowKey);
         if (!state.txid) continue;
         try {
-          const res = await fetch(`${getMempoolApi()}/tx/${encodeURIComponent(state.txid)}/status`);
-          if (!res.ok) continue;
-          const payload = await res.json();
-          if (payload?.confirmed) {
+          const payload = await mempoolJson(`/tx/${encodeURIComponent(state.txid)}/status`);
+          const latest = getSyncState(row.rowKey);
+          if (payload?.confirmed && latest.status === 'broadcasted' && latest.txid === state.txid) {
             setSyncState(row.rowKey, { status: 'confirmed' });
             row.hasP2fk = true;
             appendLog(`Confirmed sync tx ${state.txid} for ${row.rowKey}.`, 'good');
